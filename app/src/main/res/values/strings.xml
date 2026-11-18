@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">BPB VPN</string>
+    <string name="vpn_notification_channel_name">BPB VPN Tunnel</string>
+    <string name="vpn_notification_channel_desc">Displays active encrypted tunnel status and live telemetry</string>
+    <string name="vpn_status_idle">Disconnected</string>
+    <string name="vpn_status_connecting">Verifying Tunnel…</string>
+    <string name="vpn_status_connected">Protected</string>
+    <string name="vpn_status_error">Connection Failed</string>
+</resources>

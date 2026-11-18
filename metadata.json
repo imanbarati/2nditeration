@@ -1,0 +1,6 @@
+{
+  "name": "BPB VPN",
+  "description": "Privacy-first anti-censorship VPN client featuring Cloudflare Clean IP scanning, Serverless DoH DNS tunneling, DPI packet obfuscation, split tunneling, and Xray configuration management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
