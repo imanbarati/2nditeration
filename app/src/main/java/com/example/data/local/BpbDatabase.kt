@@ -8,14 +8,16 @@ import androidx.room.RoomDatabase
 @Database(
     entities = [
         VpnProfileEntity::class,
+        XrayConfigEntity::class,
         SubscriptionEntity::class,
         CleanIpEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class BpbDatabase : RoomDatabase() {
     abstract fun vpnProfileDao(): VpnProfileDao
+    abstract fun xrayConfigDao(): XrayConfigDao
     abstract fun subscriptionDao(): SubscriptionDao
     abstract fun cleanIpDao(): CleanIpDao
 
@@ -29,7 +31,10 @@ abstract class BpbDatabase : RoomDatabase() {
                     context.applicationContext,
                     BpbDatabase::class.java,
                     "bpb_vpn_database.db"
-                ).build().also { INSTANCE = it }
+                )
+                    .fallbackToDestructiveMigration(true)
+                    .build()
+                    .also { INSTANCE = it }
             }
         }
     }

@@ -6,10 +6,10 @@ import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.BpbLogBuffer
-import com.example.core.ConfigParser
 import com.example.data.local.CleanIpEntity
 import com.example.data.local.SubscriptionEntity
-import com.example.data.local.VpnProfileEntity
+import com.example.data.local.XrayConfigEntity
+import com.example.data.model.AetherWarpConfig
 import com.example.data.model.BuiltInDnsPresets
 import com.example.data.model.ConnectionStatus
 import com.example.data.model.DnsTestResult
@@ -17,6 +17,7 @@ import com.example.data.model.FragmentConfig
 import com.example.data.model.InstalledAppInfo
 import com.example.data.model.LogEntry
 import com.example.data.model.ProtocolType
+import com.example.data.model.PsiphonChainConfig
 import com.example.data.model.RoutingConfig
 import com.example.data.model.ScanProgress
 import com.example.data.model.ScannerConfig
@@ -25,8 +26,10 @@ import com.example.data.model.ThemeMode
 import com.example.data.model.TunnelMode
 import com.example.data.model.TunnelStats
 import com.example.data.model.UdpNoisePreset
+import com.example.data.model.WarpEndpointCandidate
 import com.example.data.preferences.BpbSettingsSnapshot
 import com.example.data.repository.BpbRepository
+import com.example.vpn.BaseVpnService
 import com.example.vpn.BpbVpnService
 import com.example.vpn.VpnStateHolder
 import kotlinx.coroutines.Job
@@ -36,7 +39,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -44,20 +46,24 @@ import kotlinx.coroutines.launch
 data class BpbUiState(
     val tunnelStats: TunnelStats = TunnelStats(),
     val settings: BpbSettingsSnapshot = BpbSettingsSnapshot(),
-    val profiles: List<VpnProfileEntity> = emptyList(),
+    val xrayConfigs: List<XrayConfigEntity> = emptyList(),
     val subscriptions: List<SubscriptionEntity> = emptyList(),
     val cleanIps: List<CleanIpEntity> = emptyList(),
+    val warpCandidates: List<WarpEndpointCandidate> = emptyList(),
+    val isDiscoveringWarp: Boolean = false,
     val scannerConfig: ScannerConfig = ScannerConfig(),
     val scanProgress: ScanProgress = ScanProgress(),
     val dnsTestResults: List<DnsTestResult> = emptyList(),
     val isTestingDns: Boolean = false,
     val isImporting: Boolean = false,
-    val isPingingProfiles: Boolean = false,
+    val isPingingConfigs: Boolean = false,
     val installedApps: List<InstalledAppInfo> = emptyList(),
     val isLoadingApps: Boolean = false,
 ) {
-    val activeProfile: VpnProfileEntity?
-        get() = profiles.firstOrNull { it.id == settings.activeProfileId } ?: profiles.firstOrNull()
+    val activeXrayConfig: XrayConfigEntity?
+        get() = xrayConfigs.firstOrNull { it.isActive }
+            ?: xrayConfigs.firstOrNull { it.id == settings.activeProfileId }
+            ?: xrayConfigs.firstOrNull()
 }
 
 class BpbViewModel(application: Application) : AndroidViewModel(application) {
@@ -69,9 +75,11 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
     private val _dnsTestResults = MutableStateFlow<List<DnsTestResult>>(emptyList())
     private val _isTestingDns = MutableStateFlow(false)
     private val _isImporting = MutableStateFlow(false)
-    private val _isPingingProfiles = MutableStateFlow(false)
+    private val _isPingingConfigs = MutableStateFlow(false)
     private val _installedApps = MutableStateFlow<List<InstalledAppInfo>>(emptyList())
     private val _isLoadingApps = MutableStateFlow(false)
+    private val _warpCandidates = MutableStateFlow<List<WarpEndpointCandidate>>(emptyList())
+    private val _isDiscoveringWarp = MutableStateFlow(false)
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
@@ -83,7 +91,7 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
     private data class CoreSnapshot(
         val stats: TunnelStats,
         val settings: BpbSettingsSnapshot,
-        val profiles: List<VpnProfileEntity>,
+        val configs: List<XrayConfigEntity>,
         val subs: List<SubscriptionEntity>,
         val ips: List<CleanIpEntity>,
     )
@@ -97,16 +105,18 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
         val isPinging: Boolean,
         val apps: List<InstalledAppInfo>,
         val isLoadingApps: Boolean,
+        val warpCandidates: List<WarpEndpointCandidate>,
+        val isDiscoveringWarp: Boolean,
     )
 
     private val coreFlow = combine(
         VpnStateHolder.stats,
         repository.settingsFlow,
-        repository.profilesFlow,
+        repository.xrayConfigsFlow,
         repository.subscriptionsFlow,
         repository.cleanIpsFlow
-    ) { stats, settings, profiles, subs, ips ->
-        CoreSnapshot(stats, settings, profiles, subs, ips)
+    ) { stats, settings, configs, subs, ips ->
+        CoreSnapshot(stats, settings, configs, subs, ips)
     }
 
     private val auxFlow = combine(
@@ -115,9 +125,11 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
         _dnsTestResults,
         _isTestingDns,
         _isImporting,
-        _isPingingProfiles,
+        _isPingingConfigs,
         _installedApps,
-        _isLoadingApps
+        _isLoadingApps,
+        _warpCandidates,
+        _isDiscoveringWarp
     ) { arr ->
         @Suppress("UNCHECKED_CAST")
         AuxiliarySnapshot(
@@ -128,7 +140,9 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
             isImporting = arr[4] as Boolean,
             isPinging = arr[5] as Boolean,
             apps = arr[6] as List<InstalledAppInfo>,
-            isLoadingApps = arr[7] as Boolean
+            isLoadingApps = arr[7] as Boolean,
+            warpCandidates = arr[8] as List<WarpEndpointCandidate>,
+            isDiscoveringWarp = arr[9] as Boolean
         )
     }
 
@@ -136,15 +150,17 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
         BpbUiState(
             tunnelStats = core.stats,
             settings = core.settings,
-            profiles = core.profiles,
+            xrayConfigs = core.configs,
             subscriptions = core.subs,
             cleanIps = core.ips,
+            warpCandidates = aux.warpCandidates,
+            isDiscoveringWarp = aux.isDiscoveringWarp,
             scannerConfig = aux.scannerConfig,
             scanProgress = aux.scanProgress,
             dnsTestResults = aux.dnsResults,
             isTestingDns = aux.isTestingDns,
             isImporting = aux.isImporting,
-            isPingingProfiles = aux.isPinging,
+            isPingingConfigs = aux.isPinging,
             installedApps = aux.apps,
             isLoadingApps = aux.isLoadingApps
         )
@@ -157,7 +173,7 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
     fun startVpnService() {
         val ctx = getApplication<Application>()
         val intent = Intent(ctx, BpbVpnService::class.java).apply {
-            action = BpbVpnService.ACTION_START
+            action = BaseVpnService.ACTION_START
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             ctx.startForegroundService(intent)
@@ -169,7 +185,7 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
     fun stopVpnService() {
         val ctx = getApplication<Application>()
         val intent = Intent(ctx, BpbVpnService::class.java).apply {
-            action = BpbVpnService.ACTION_STOP
+            action = BaseVpnService.ACTION_STOP
         }
         ctx.startService(intent)
     }
@@ -183,11 +199,53 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun selectProfile(profile: VpnProfileEntity) {
+    fun updateAetherConfig(config: AetherWarpConfig) {
+        viewModelScope.launch { repository.updateAetherConfig(config) }
+    }
+
+    fun updatePsiphonConfig(config: PsiphonChainConfig) {
+        viewModelScope.launch { repository.updatePsiphonConfig(config) }
+    }
+
+    fun discoverWarpEndpoints() {
+        if (_isDiscoveringWarp.value) return
+        val aether = uiState.value.settings.aetherConfig
         viewModelScope.launch {
-            repository.setActiveProfileId(profile.id)
+            _isDiscoveringWarp.value = true
+            val found = repository.discoverWarpEndpoints(aether.transportMode, aether.masqueSni)
+            _warpCandidates.value = found
+            _isDiscoveringWarp.value = false
+            if (found.isNotEmpty()) {
+                val best = found.first()
+                emitMessage("Discovered ${found.size} WARP gateway(s). Fastest: ${best.ip} (${best.latencyMs}ms)")
+            } else {
+                emitMessage("No WARP gateways responded. Try switching to MASQUE or Gool.")
+            }
+        }
+    }
+
+    fun applyWarpCandidate(candidate: WarpEndpointCandidate) {
+        viewModelScope.launch {
+            val current = uiState.value.settings.aetherConfig
+            repository.updateAetherConfig(
+                current.copy(endpointHost = candidate.ip, endpointPort = candidate.port)
+            )
+            emitMessage("Active Aether gateway set to ${candidate.ip}:${candidate.port}")
+        }
+    }
+
+    fun selectXrayConfig(config: XrayConfigEntity) {
+        viewModelScope.launch {
+            repository.setActiveXrayConfig(config.id)
             repository.setTunnelMode(TunnelMode.PROFILE_TUNNEL)
-            emitMessage("Selected ${profile.name}")
+            emitMessage("Selected ${config.name}")
+        }
+    }
+
+    fun updateXrayObfuscation(config: XrayConfigEntity) {
+        viewModelScope.launch {
+            repository.updateXrayObfuscation(config)
+            emitMessage("Saved obfuscation params for ${config.name}")
         }
     }
 
@@ -195,7 +253,7 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isImporting.value = true
             repository.importFromUriOrPayload(rawText)
-                .onSuccess { count -> emitMessage("Imported $count profile(s)") }
+                .onSuccess { count -> emitMessage("Imported $count Xray config(s)") }
                 .onFailure { err -> emitMessage(err.message ?: "Import failed") }
             _isImporting.value = false
         }
@@ -205,7 +263,7 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isImporting.value = true
             repository.importSubscriptionUrl(name, url)
-                .onSuccess { count -> emitMessage("Imported $count profile(s) from subscription") }
+                .onSuccess { count -> emitMessage("Imported $count config(s) from subscription") }
                 .onFailure { err -> emitMessage(err.message ?: "Subscription fetch failed") }
             _isImporting.value = false
         }
@@ -215,64 +273,77 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isImporting.value = true
             repository.refreshSubscription(sub)
-                .onSuccess { count -> emitMessage("Updated ${sub.name}: $count profiles") }
+                .onSuccess { count -> emitMessage("Updated ${sub.name}: $count configs") }
                 .onFailure { err -> emitMessage("Refresh failed: ${err.message}") }
             _isImporting.value = false
         }
     }
 
-    fun createBpbWizardProfile(
+    fun createXrayConfigFromWizard(
         name: String,
         protocol: ProtocolType,
-        workerDomain: String,
-        cleanIpOrHost: String,
+        serverAddress: String,
+        sni: String,
         port: Int,
         uuidOrSecret: String,
         transport: String,
         path: String,
         fingerprint: String,
+        fragmentEnabled: Boolean,
+        fragmentPackets: String,
+        fragmentLength: String,
+        fragmentInterval: String,
+        udpNoiseEnabled: Boolean,
+        muxEnabled: Boolean,
+        psiphonChainEnabled: Boolean,
     ) {
         viewModelScope.launch {
-            val host = workerDomain.trim()
-            val address = cleanIpOrHost.trim().ifEmpty { host }
-            val profile = VpnProfileEntity(
-                name = name.trim().ifEmpty { "BPB ${protocol.label} • $host" },
+            val host = sni.trim()
+            val address = serverAddress.trim().ifEmpty { host }
+            val entity = XrayConfigEntity(
+                name = name.trim().ifEmpty { "Xray ${protocol.label} • $address" },
                 protocol = protocol.name,
-                address = address,
+                serverAddress = address,
                 port = port,
-                uuidOrSecret = uuidOrSecret.trim(),
+                userIdOrPassword = uuidOrSecret.trim(),
                 sni = host.ifEmpty { address },
                 hostHeader = host.ifEmpty { address },
-                path = path.trim().ifEmpty { "/" },
-                transport = transport,
-                security = "tls",
-                fingerprint = fingerprint
+                pathOrServiceName = path.trim().ifEmpty { "/" },
+                networkTransport = transport,
+                securityType = "tls",
+                tlsFingerprint = fingerprint,
+                fragmentEnabled = fragmentEnabled,
+                fragmentPackets = fragmentPackets,
+                fragmentLength = fragmentLength,
+                fragmentInterval = fragmentInterval,
+                udpNoiseEnabled = udpNoiseEnabled,
+                muxEnabled = muxEnabled,
+                psiphonChainEnabled = psiphonChainEnabled
             )
-            val id = repository.saveProfile(profile)
-            repository.setActiveProfileId(id)
+            repository.saveXrayConfig(entity, activate = true)
             repository.setTunnelMode(TunnelMode.PROFILE_TUNNEL)
-            emitMessage("Created BPB profile '${profile.name}'")
+            emitMessage("Saved Xray config '${entity.name}' to Room DB")
         }
     }
 
-    fun deleteProfile(profile: VpnProfileEntity) {
+    fun deleteXrayConfig(config: XrayConfigEntity) {
         viewModelScope.launch {
-            repository.deleteProfile(profile)
-            emitMessage("Removed ${profile.name}")
+            repository.deleteXrayConfig(config)
+            emitMessage("Removed ${config.name}")
         }
     }
 
-    fun togglePinProfile(profile: VpnProfileEntity) {
-        viewModelScope.launch { repository.togglePinProfile(profile) }
+    fun togglePinXrayConfig(config: XrayConfigEntity) {
+        viewModelScope.launch { repository.togglePinXrayConfig(config) }
     }
 
-    fun pingAllProfiles() {
-        if (_isPingingProfiles.value) return
+    fun pingAllConfigs() {
+        if (_isPingingConfigs.value) return
         viewModelScope.launch {
-            _isPingingProfiles.value = true
-            repository.pingAllProfiles()
-            _isPingingProfiles.value = false
-            emitMessage("Profile latency check complete")
+            _isPingingConfigs.value = true
+            repository.pingAllXrayConfigs()
+            _isPingingConfigs.value = false
+            emitMessage("Xray config latency check complete")
         }
     }
 
@@ -304,14 +375,16 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
         BpbLogBuffer.warn("SCANNER", "Clean IP scan stopped by user.")
     }
 
-    fun applyCleanIpToActiveProfile(ip: String) {
+    fun applyCleanIpToActiveConfig(ip: String) {
         viewModelScope.launch {
-            val active = uiState.value.activeProfile
+            val active = uiState.value.activeXrayConfig
             if (active == null) {
-                emitMessage("Create or import a BPB profile first to apply $ip")
+                val aether = uiState.value.settings.aetherConfig
+                repository.updateAetherConfig(aether.copy(endpointHost = ip))
+                emitMessage("Applied $ip to Aether WARP endpoint")
                 return@launch
             }
-            repository.applyCleanIpToProfile(active.id, ip)
+            repository.applyCleanIpToXrayConfig(active.id, ip)
             emitMessage("Applied $ip to ${active.name}")
         }
     }
@@ -381,19 +454,8 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repository.setThemeMode(mode) }
     }
 
-    fun buildXrayJsonFor(profile: VpnProfileEntity?): String {
-        val settings = uiState.value.settings
-        val preset = BuiltInDnsPresets.all.find { it.id == settings.activeDnsPresetId }
-            ?: BuiltInDnsPresets.all.first()
-        return ConfigParser.buildXrayConfigJson(
-            profile = profile,
-            dnsPreset = preset,
-            customDohUrl = settings.customDohUrl,
-            fragmentConfig = settings.fragmentConfig,
-            udpNoisePreset = settings.udpNoisePreset,
-            routingConfig = settings.routingConfig
-        )
-    }
+    fun buildXrayJsonFor(config: XrayConfigEntity): String =
+        repository.buildXrayJson(config, uiState.value.settings)
 
     fun clearLogs() = BpbLogBuffer.clear()
 

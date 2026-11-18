@@ -11,7 +11,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,7 +22,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -36,6 +34,7 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Shield
@@ -74,7 +73,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
-import com.example.data.local.VpnProfileEntity
+import com.example.data.local.XrayConfigEntity
 import com.example.data.model.BuiltInDnsPresets
 import com.example.data.model.ConnectionStatus
 import com.example.data.model.TunnelMode
@@ -99,20 +98,22 @@ fun HomeScreen(
     uiState: BpbUiState,
     onToggleConnection: () -> Unit,
     onModeSelected: (TunnelMode) -> Unit,
-    onSelectProfile: (VpnProfileEntity) -> Unit,
+    onSelectXrayConfig: (XrayConfigEntity) -> Unit,
+    onNavigateToAether: () -> Unit,
     onNavigateToProfiles: () -> Unit,
     onNavigateToScanner: (Boolean) -> Unit,
     onNavigateToLogs: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val stats = uiState.tunnelStats
-    val activeProfile = uiState.activeProfile
+    val activeXray = uiState.activeXrayConfig
+    val aether = uiState.settings.aetherConfig
+    val psiphon = uiState.settings.psiphonConfig
     val activeDns = BuiltInDnsPresets.all.find { it.id == uiState.settings.activeDnsPresetId }
         ?: BuiltInDnsPresets.all.first()
 
     var showProfileSheet by remember { mutableStateOf(false) }
 
-    // Live session duration ticker
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(stats.status, stats.startedAtMs) {
         if (stats.status == ConnectionStatus.CONNECTED && stats.startedAtMs > 0L) {
@@ -158,7 +159,6 @@ fun HomeScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Atmospheric Hero Connection Card
         item {
             Box(
                 modifier = Modifier
@@ -195,7 +195,6 @@ fun HomeScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    // Header brand + status badge
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -203,12 +202,12 @@ fun HomeScreen(
                     ) {
                         Column {
                             Text(
-                                text = "BPB VPN",
+                                text = "BPB • Aether",
                                 style = MaterialTheme.typography.headlineMedium,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "Anti-Censorship & Serverless DoH",
+                                text = "Aether WARP + Psiphon + Xray Engine",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -239,7 +238,6 @@ fun HomeScreen(
                         }
                     }
 
-                    // Mode Switcher
                     SingleChoiceSegmentedButtonRow(
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -264,7 +262,6 @@ fun HomeScreen(
 
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    // Central Connection Orb
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier.size(164.dp)
@@ -328,20 +325,31 @@ fun HomeScreen(
                         }
                     }
 
-                    // Timer or Error Notice
                     if (stats.status == ConnectionStatus.CONNECTED) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text(
-                                text = formatDurationSeconds(elapsedSeconds),
-                                style = MaterialTheme.typography.headlineSmall.copy(
-                                    fontFamily = MonoBodyStyle.fontFamily
-                                ),
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            LatencyPill(latencyMs = stats.verifiedLatencyMs)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = formatDurationSeconds(elapsedSeconds),
+                                    style = MaterialTheme.typography.headlineSmall.copy(
+                                        fontFamily = MonoBodyStyle.fontFamily
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                LatencyPill(latencyMs = stats.verifiedLatencyMs)
+                            }
+                            if (stats.localSocksAddress != null) {
+                                InfoChip(
+                                    icon = Icons.Filled.Lan,
+                                    label = "SOCKS5 ${stats.localSocksAddress}",
+                                    tint = BpbEmerald
+                                )
+                            }
                         }
                     } else {
                         Text(
@@ -370,17 +378,20 @@ fun HomeScreen(
             }
         }
 
-        // Active Profile / Endpoint Card
+        // Active Endpoint / Chain Card
         item {
             BpbPanelCard(
                 modifier = Modifier
                     .widthIn(max = 600.dp)
                     .testTag("active_endpoint_card"),
                 onClick = {
-                    if (uiState.profiles.isNotEmpty()) {
-                        showProfileSheet = true
-                    } else {
-                        onNavigateToProfiles()
+                    when (uiState.settings.tunnelMode) {
+                        TunnelMode.AETHER_WARP -> onNavigateToAether()
+                        TunnelMode.PROFILE_TUNNEL -> {
+                            if (uiState.xrayConfigs.isNotEmpty()) showProfileSheet = true
+                            else onNavigateToProfiles()
+                        }
+                        TunnelMode.SERVERLESS_DOH -> onNavigateToScanner(true)
                     }
                 }
             ) {
@@ -394,58 +405,73 @@ fun HomeScreen(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = if (uiState.settings.tunnelMode == TunnelMode.PROFILE_TUNNEL) {
-                                "ACTIVE BPB PROFILE"
-                            } else {
-                                "SERVERLESS DOH ENDPOINT"
+                            text = when (uiState.settings.tunnelMode) {
+                                TunnelMode.AETHER_WARP -> "AETHER WARP + PSIPHON CHAIN"
+                                TunnelMode.PROFILE_TUNNEL -> "ACTIVE XRAY ROOM CONFIG"
+                                TunnelMode.SERVERLESS_DOH -> "SERVERLESS DOH ENDPOINT"
                             },
                             style = MonoCaptionStyle,
                             color = MaterialTheme.colorScheme.primary
                         )
 
-                        if (uiState.settings.tunnelMode == TunnelMode.PROFILE_TUNNEL && activeProfile != null) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                ProtocolBadge(protocol = activeProfile.protocolEnum())
+                        when (uiState.settings.tunnelMode) {
+                            TunnelMode.AETHER_WARP -> {
+                                val chainSuffix = if (psiphon.enabled) " + Psiphon (${psiphon.transport.label})" else ""
                                 Text(
-                                    text = activeProfile.name,
+                                    text = "${aether.transportMode.label}$chainSuffix",
                                     style = MaterialTheme.typography.titleMedium,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                                Text(
+                                    text = "${aether.endpointHost}:${aether.endpointPort} • SNI ${aether.masqueSni} • SOCKS :${aether.localSocksPort}",
+                                    style = MonoCaptionStyle,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
-                            Text(
-                                text = "${activeProfile.address}:${activeProfile.port} • ${activeProfile.transport.uppercase()} • SNI ${activeProfile.sni.ifBlank { activeProfile.address }}",
-                                style = MonoCaptionStyle,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        } else if (uiState.settings.tunnelMode == TunnelMode.PROFILE_TUNNEL) {
-                            Text(
-                                text = "No BPB profile selected yet",
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            Text(
-                                text = "Tap to import a subscription, paste URI, or run BPB Wizard",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        } else {
-                            val endpoint = uiState.settings.customDohUrl.ifBlank { activeDns.endpoint }
-                            Text(
-                                text = activeDns.name,
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            Text(
-                                text = "$endpoint • Fake SNI: ${uiState.settings.fakeSniHost}",
-                                style = MonoCaptionStyle,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            TunnelMode.PROFILE_TUNNEL -> {
+                                if (activeXray != null) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        ProtocolBadge(protocol = activeXray.protocolEnum())
+                                        Text(
+                                            text = activeXray.name,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Text(
+                                        text = "${activeXray.serverAddress}:${activeXray.port} • Frag=${activeXray.fragmentPackets} • Noise=${activeXray.udpNoiseEnabled}",
+                                        style = MonoCaptionStyle,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                } else {
+                                    Text("No Xray config saved yet", style = MaterialTheme.typography.titleMedium)
+                                    Text(
+                                        "Tap to import URI, subscription, or build in Wizard",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            TunnelMode.SERVERLESS_DOH -> {
+                                val endpoint = uiState.settings.customDohUrl.ifBlank { activeDns.endpoint }
+                                Text(text = activeDns.name, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    text = "$endpoint • Fake SNI: ${uiState.settings.fakeSniHost}",
+                                    style = MonoCaptionStyle,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
 
@@ -453,12 +479,16 @@ fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        if (uiState.settings.tunnelMode == TunnelMode.PROFILE_TUNNEL && activeProfile != null) {
-                            LatencyPill(latencyMs = activeProfile.latencyMs)
+                        if (uiState.settings.tunnelMode == TunnelMode.PROFILE_TUNNEL && activeXray != null) {
+                            LatencyPill(latencyMs = activeXray.latencyMs)
                         }
                         Icon(
-                            imageVector = if (uiState.profiles.isNotEmpty()) Icons.Filled.SwapHoriz else Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = "Switch endpoint",
+                            imageVector = if (uiState.settings.tunnelMode == TunnelMode.PROFILE_TUNNEL && uiState.xrayConfigs.isNotEmpty()) {
+                                Icons.Filled.SwapHoriz
+                            } else {
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight
+                            },
+                            contentDescription = "Configure endpoint",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -477,9 +507,9 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     TelemetryTile(
-                        title = "TUN TRAFFIC",
+                        title = "TUN + PROXY",
                         value = "↓ ${formatByteCount(stats.rxBytes)}",
-                        subtitle = "↑ ${formatByteCount(stats.txBytes)}",
+                        subtitle = "↑ ${formatByteCount(stats.txBytes)} (${stats.proxiedConnections} conn)",
                         icon = Icons.Filled.Bolt,
                         accent = BpbCyan,
                         modifier = Modifier.weight(1f)
@@ -573,20 +603,17 @@ fun HomeScreen(
                     .padding(bottom = 28.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = "Switch Active BPB Profile",
-                    style = MaterialTheme.typography.titleLarge
-                )
+                Text("Switch Active Xray Configuration", style = MaterialTheme.typography.titleLarge)
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    items(uiState.profiles, key = { it.id }) { profile ->
-                        val isSelected = profile.id == activeProfile?.id
+                    items(uiState.xrayConfigs, key = { it.id }) { cfg ->
+                        val isSelected = cfg.id == activeXray?.id
                         BpbPanelCard(
                             highlighted = isSelected,
                             onClick = {
-                                onSelectProfile(profile)
+                                onSelectXrayConfig(cfg)
                                 showProfileSheet = false
                             }
                         ) {
@@ -600,9 +627,9 @@ fun HomeScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        ProtocolBadge(protocol = profile.protocolEnum())
+                                        ProtocolBadge(protocol = cfg.protocolEnum())
                                         Text(
-                                            text = profile.name,
+                                            text = cfg.name,
                                             style = MaterialTheme.typography.titleSmall,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
@@ -610,7 +637,7 @@ fun HomeScreen(
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
-                                        text = "${profile.address}:${profile.port}",
+                                        text = "${cfg.serverAddress}:${cfg.port}",
                                         style = MonoCaptionStyle,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -619,7 +646,7 @@ fun HomeScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    LatencyPill(latencyMs = profile.latencyMs)
+                                    LatencyPill(latencyMs = cfg.latencyMs)
                                     if (isSelected) {
                                         Icon(
                                             imageVector = Icons.Filled.CheckCircle,

@@ -7,15 +7,19 @@ import com.example.core.BpbLogBuffer
 import com.example.core.CloudflareScanner
 import com.example.core.ConfigParser
 import com.example.core.DnsOverHttpsClient
-import com.example.core.ProfileLatencyTester
+import com.example.core.WarpEndpointScanner
 import com.example.data.local.BpbDatabase
 import com.example.data.local.CleanIpEntity
 import com.example.data.local.SubscriptionEntity
-import com.example.data.local.VpnProfileEntity
+import com.example.data.local.XrayConfigEntity
+import com.example.data.model.AetherTransportMode
+import com.example.data.model.AetherWarpConfig
 import com.example.data.model.BuiltInDnsPresets
+import com.example.data.model.DnsPreset
 import com.example.data.model.DnsTestResult
 import com.example.data.model.FragmentConfig
 import com.example.data.model.InstalledAppInfo
+import com.example.data.model.PsiphonChainConfig
 import com.example.data.model.RoutingConfig
 import com.example.data.model.ScanProgress
 import com.example.data.model.ScannerConfig
@@ -23,6 +27,7 @@ import com.example.data.model.SplitTunnelMode
 import com.example.data.model.ThemeMode
 import com.example.data.model.TunnelMode
 import com.example.data.model.UdpNoisePreset
+import com.example.data.model.WarpEndpointCandidate
 import com.example.data.preferences.BpbPreferencesRepository
 import com.example.data.preferences.BpbSettingsSnapshot
 import kotlinx.coroutines.Dispatchers
@@ -38,7 +43,7 @@ import java.util.concurrent.TimeUnit
 class BpbRepository(private val context: Context) {
 
     private val database = BpbDatabase.getInstance(context)
-    private val profileDao = database.vpnProfileDao()
+    private val xrayConfigRepo = XrayConfigRepository(database.xrayConfigDao())
     private val subscriptionDao = database.subscriptionDao()
     private val cleanIpDao = database.cleanIpDao()
     private val prefsRepo = BpbPreferencesRepository(context)
@@ -49,25 +54,19 @@ class BpbRepository(private val context: Context) {
         .followRedirects(true)
         .build()
 
-    val profilesFlow: Flow<List<VpnProfileEntity>> = profileDao.observeAllProfiles()
+    val xrayConfigsFlow: Flow<List<XrayConfigEntity>> = xrayConfigRepo.allConfigs
     val subscriptionsFlow: Flow<List<SubscriptionEntity>> = subscriptionDao.observeSubscriptions()
     val cleanIpsFlow: Flow<List<CleanIpEntity>> = cleanIpDao.observeCleanIps()
     val settingsFlow: Flow<BpbSettingsSnapshot> = prefsRepo.settingsFlow
 
     suspend fun importFromUriOrPayload(rawText: String): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {
-            val parsed = ConfigParser.parseSubscriptionPayload(rawText)
-            require(parsed.isNotEmpty()) {
-                "No valid VLESS, Trojan, Shadowsocks, SOCKS, or WARP configs found."
+            val imported = xrayConfigRepo.importFromText(rawText)
+            require(imported.isNotEmpty()) {
+                "No valid VLESS, VMess, Trojan, Shadowsocks, SOCKS, or WARP configs found."
             }
-            profileDao.insertProfiles(parsed)
-            val all = profileDao.getAllProfilesOnce()
-            val settings = prefsRepo.getSnapshot()
-            if (settings.activeProfileId == null && all.isNotEmpty()) {
-                prefsRepo.setActiveProfileId(all.first().id)
-            }
-            BpbLogBuffer.info("PROFILE", "Imported ${parsed.size} profile(s) from text/URI.")
-            parsed.size
+            BpbLogBuffer.info("XRAY-DB", "Imported ${imported.size} Xray configuration(s).")
+            imported.size
         }
     }
 
@@ -80,12 +79,10 @@ class BpbRepository(private val context: Context) {
             BpbLogBuffer.info("SUB", "Fetching subscription '$name' from $cleanUrl…")
             val request = Request.Builder()
                 .url(cleanUrl)
-                .header("User-Agent", "BPB-VPN-Android/1.0")
+                .header("User-Agent", "BPB-Aether-Android/1.0")
                 .build()
             val bodyText = httpClient.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    error("HTTP ${resp.code} while fetching subscription")
-                }
+                if (!resp.isSuccessful) error("HTTP ${resp.code} while fetching subscription")
                 resp.body?.string().orEmpty()
             }
             val subId = subscriptionDao.insertSubscription(
@@ -95,11 +92,9 @@ class BpbRepository(private val context: Context) {
                     profileCount = 0
                 )
             )
-            val parsed = ConfigParser.parseSubscriptionPayload(bodyText, subscriptionId = subId)
-            if (parsed.isEmpty()) {
-                error("Subscription fetched, but no supported VPN configs were found.")
-            }
-            profileDao.insertProfiles(parsed)
+            val parsed = xrayConfigRepo.importFromText(bodyText, subscriptionId = subId)
+            if (parsed.isEmpty()) error("Subscription fetched, but no supported Xray/VPN configs were found.")
+
             subscriptionDao.updateSubscription(
                 SubscriptionEntity(
                     id = subId,
@@ -109,12 +104,7 @@ class BpbRepository(private val context: Context) {
                     lastUpdatedAt = System.currentTimeMillis()
                 )
             )
-            val settings = prefsRepo.getSnapshot()
-            if (settings.activeProfileId == null) {
-                val all = profileDao.getAllProfilesOnce()
-                all.firstOrNull()?.let { prefsRepo.setActiveProfileId(it.id) }
-            }
-            BpbLogBuffer.info("SUB", "Imported ${parsed.size} profile(s) for '$name'.")
+            BpbLogBuffer.info("SUB", "Imported ${parsed.size} Xray config(s) for '$name'.")
             parsed.size
         }.onFailure { err ->
             BpbLogBuffer.error("SUB", "Subscription import failed: ${err.message}")
@@ -126,85 +116,76 @@ class BpbRepository(private val context: Context) {
             BpbLogBuffer.info("SUB", "Refreshing subscription '${sub.name}'…")
             val request = Request.Builder()
                 .url(sub.url)
-                .header("User-Agent", "BPB-VPN-Android/1.0")
+                .header("User-Agent", "BPB-Aether-Android/1.0")
                 .build()
             val bodyText = httpClient.newCall(request).execute().use { resp ->
                 if (!resp.isSuccessful) error("HTTP ${resp.code}")
                 resp.body?.string().orEmpty()
             }
-            val parsed = ConfigParser.parseSubscriptionPayload(bodyText, subscriptionId = sub.id)
-            if (parsed.isEmpty()) error("No valid profiles returned")
-            profileDao.deleteBySubscriptionId(sub.id)
-            profileDao.insertProfiles(parsed)
+            xrayConfigRepo.deleteBySubscriptionId(sub.id)
+            val parsed = xrayConfigRepo.importFromText(bodyText, subscriptionId = sub.id)
+            if (parsed.isEmpty()) error("No valid configs returned")
             subscriptionDao.updateSubscription(
                 sub.copy(profileCount = parsed.size, lastUpdatedAt = System.currentTimeMillis())
             )
-            BpbLogBuffer.info("SUB", "Refreshed '${sub.name}' (${parsed.size} profiles).")
+            BpbLogBuffer.info("SUB", "Refreshed '${sub.name}' (${parsed.size} configs).")
             parsed.size
         }
     }
 
-    suspend fun saveProfile(profile: VpnProfileEntity): Long {
-        val id = profileDao.insertProfile(profile)
-        val settings = prefsRepo.getSnapshot()
-        if (settings.activeProfileId == null) {
-            prefsRepo.setActiveProfileId(id)
-        }
-        BpbLogBuffer.info("PROFILE", "Saved profile '${profile.name}' (${profile.protocol}).")
+    suspend fun saveXrayConfig(config: XrayConfigEntity, activate: Boolean = true): Long {
+        val id = xrayConfigRepo.saveConfig(config, activate = activate)
+        if (activate) prefsRepo.setActiveProfileId(id)
         return id
     }
 
-    suspend fun deleteProfile(profile: VpnProfileEntity) {
-        profileDao.deleteProfile(profile)
-        val settings = prefsRepo.getSnapshot()
-        if (settings.activeProfileId == profile.id) {
-            val remaining = profileDao.getAllProfilesOnce().firstOrNull()?.id
-            prefsRepo.setActiveProfileId(remaining)
-        }
-        BpbLogBuffer.info("PROFILE", "Deleted profile '${profile.name}'.")
+    suspend fun setActiveXrayConfig(id: Long) {
+        xrayConfigRepo.setActive(id)
+        prefsRepo.setActiveProfileId(id)
     }
 
-    suspend fun togglePinProfile(profile: VpnProfileEntity) {
-        profileDao.updateProfile(profile.copy(isPinned = !profile.isPinned))
+    suspend fun updateXrayObfuscation(config: XrayConfigEntity) = xrayConfigRepo.updateObfuscation(config)
+
+    suspend fun togglePinXrayConfig(config: XrayConfigEntity) = xrayConfigRepo.togglePin(config)
+
+    suspend fun deleteXrayConfig(config: XrayConfigEntity) {
+        xrayConfigRepo.deleteConfig(config)
+        val remaining = xrayConfigRepo.getActiveOrFirst()?.id
+        prefsRepo.setActiveProfileId(remaining)
     }
 
-    suspend fun applyCleanIpToProfile(profileId: Long, cleanIp: String) {
-        profileDao.updateAddress(profileId, cleanIp)
-        BpbLogBuffer.info("PROFILE", "Applied Clean IP $cleanIp to profile #$profileId.")
+    suspend fun applyCleanIpToXrayConfig(configId: Long, cleanIp: String) {
+        xrayConfigRepo.updateServerAddress(configId, cleanIp)
+        BpbLogBuffer.info("XRAY-DB", "Applied Clean IP $cleanIp to Xray config #$configId.")
     }
 
-    suspend fun pingProfile(profile: VpnProfileEntity): Long? {
-        val rtt = ProfileLatencyTester.measureProfileLatency(profile)
-        profileDao.updateLatency(profile.id, rtt)
-        BpbLogBuffer.debug(
-            "PING",
-            "${profile.name} (${profile.address}:${profile.port}) -> ${rtt?.let { "${it}ms" } ?: "Timeout"}"
+    suspend fun pingAllXrayConfigs() = xrayConfigRepo.pingAllConfigs()
+
+    fun buildXrayJson(config: XrayConfigEntity, settings: BpbSettingsSnapshot): String =
+        xrayConfigRepo.buildXrayJson(
+            config = config,
+            routingConfig = settings.routingConfig,
+            dnsPresetId = settings.activeDnsPresetId,
+            customDohUrl = settings.customDohUrl
         )
-        return rtt
-    }
 
-    suspend fun pingAllProfiles() = coroutineScope {
-        val profiles = profileDao.getAllProfilesOnce()
-        BpbLogBuffer.info("PING", "Measuring TCP/TLS latency for ${profiles.size} profile(s)…")
-        profiles.map { profile ->
-            async(Dispatchers.IO) {
-                pingProfile(profile)
-            }
-        }.awaitAll()
-    }
+    suspend fun discoverWarpEndpoints(
+        mode: AetherTransportMode,
+        masqueSni: String,
+    ): List<WarpEndpointCandidate> = WarpEndpointScanner.discoverEndpoints(
+        mode = mode,
+        masqueSni = masqueSni
+    )
 
     suspend fun runCleanIpScan(
         config: ScannerConfig,
         onProgress: (ScanProgress) -> Unit,
     ): List<CleanIpEntity> {
         cleanIpDao.clearAll()
-        val hits = mutableListOf<CleanIpEntity>()
         val finalResults = CloudflareScanner.runScan(
             config = config,
             onProgress = onProgress,
-            onHit = { hit ->
-                hits.add(hit)
-            }
+            onHit = {}
         )
         if (finalResults.isNotEmpty()) {
             cleanIpDao.insertAll(finalResults)
@@ -212,15 +193,13 @@ class BpbRepository(private val context: Context) {
         return finalResults
     }
 
-    suspend fun clearCleanIps() = cleanIpDao.clearAll()
-
     suspend fun testAllDnsResolvers(domain: String, customDohUrl: String): List<DnsTestResult> = coroutineScope {
         BpbLogBuffer.info("DNS", "Benchmarking all DoH resolvers for '$domain'…")
         val presets = BuiltInDnsPresets.all.toMutableList()
         if (customDohUrl.isNotBlank()) {
             presets.add(
                 0,
-                com.example.data.model.DnsPreset(
+                DnsPreset(
                     id = "custom_doh",
                     name = "Custom DoH",
                     protocol = "DoH (Custom)",
@@ -240,8 +219,7 @@ class BpbRepository(private val context: Context) {
     suspend fun loadInstalledApps(): List<InstalledAppInfo> = withContext(Dispatchers.IO) {
         val pm = context.packageManager
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val resolveInfos = pm.queryIntentActivities(intent, 0)
-        resolveInfos
+        pm.queryIntentActivities(intent, 0)
             .map { it.activityInfo.applicationInfo }
             .distinctBy { it.packageName }
             .filter { it.packageName != context.packageName }
@@ -255,7 +233,6 @@ class BpbRepository(private val context: Context) {
             .sortedBy { it.appName.lowercase() }
     }
 
-    suspend fun setActiveProfileId(id: Long?) = prefsRepo.setActiveProfileId(id)
     suspend fun setTunnelMode(mode: TunnelMode) = prefsRepo.setTunnelMode(mode)
     suspend fun setDnsPreset(presetId: String) = prefsRepo.setDnsPreset(presetId)
     suspend fun setCustomDoh(url: String, fakeSni: String) = prefsRepo.setCustomDoh(url, fakeSni)
@@ -266,4 +243,6 @@ class BpbRepository(private val context: Context) {
     suspend fun togglePackageSelection(pkg: String) = prefsRepo.togglePackageSelection(pkg)
     suspend fun clearSelectedPackages() = prefsRepo.clearSelectedPackages()
     suspend fun setThemeMode(mode: ThemeMode) = prefsRepo.setThemeMode(mode)
+    suspend fun updateAetherConfig(config: AetherWarpConfig) = prefsRepo.updateAetherConfig(config)
+    suspend fun updatePsiphonConfig(config: PsiphonChainConfig) = prefsRepo.updatePsiphonConfig(config)
 }

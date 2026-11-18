@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -41,6 +42,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -58,7 +60,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.core.ConfigParser
 import com.example.data.local.SubscriptionEntity
-import com.example.data.local.VpnProfileEntity
+import com.example.data.local.XrayConfigEntity
 import com.example.data.model.ProtocolType
 import com.example.ui.BpbUiState
 import com.example.ui.components.BpbPanelCard
@@ -72,25 +74,33 @@ import java.util.UUID
 @Composable
 fun ProfilesScreen(
     uiState: BpbUiState,
-    onSelectProfile: (VpnProfileEntity) -> Unit,
-    onTogglePin: (VpnProfileEntity) -> Unit,
-    onDeleteProfile: (VpnProfileEntity) -> Unit,
+    onSelectConfig: (XrayConfigEntity) -> Unit,
+    onTogglePin: (XrayConfigEntity) -> Unit,
+    onDeleteConfig: (XrayConfigEntity) -> Unit,
+    onUpdateObfuscation: (XrayConfigEntity) -> Unit,
     onPingAll: () -> Unit,
     onImportUriOrPayload: (String) -> Unit,
     onImportSubscription: (String, String) -> Unit,
     onRefreshSubscription: (SubscriptionEntity) -> Unit,
-    onCreateWizardProfile: (
+    onCreateWizardConfig: (
         name: String,
         protocol: ProtocolType,
-        workerDomain: String,
-        cleanIpOrHost: String,
+        serverAddress: String,
+        sni: String,
         port: Int,
         uuidOrSecret: String,
         transport: String,
         path: String,
         fingerprint: String,
+        fragmentEnabled: Boolean,
+        fragmentPackets: String,
+        fragmentLength: String,
+        fragmentInterval: String,
+        udpNoiseEnabled: Boolean,
+        muxEnabled: Boolean,
+        psiphonChainEnabled: Boolean,
     ) -> Unit,
-    buildXrayJson: (VpnProfileEntity) -> String,
+    buildXrayJson: (XrayConfigEntity) -> String,
     onNotify: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -98,7 +108,8 @@ fun ProfilesScreen(
     var showWizardDialog by remember { mutableStateOf(false) }
     var showImportSubDialog by remember { mutableStateOf(false) }
     var showPasteUriDialog by remember { mutableStateOf(false) }
-    var jsonPreviewProfile by remember { mutableStateOf<VpnProfileEntity?>(null) }
+    var jsonPreviewConfig by remember { mutableStateOf<XrayConfigEntity?>(null) }
+    var obfuscationEditConfig by remember { mutableStateOf<XrayConfigEntity?>(null) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -108,17 +119,17 @@ fun ProfilesScreen(
     ) {
         item {
             BpbSectionHeader(
-                title = "BPB Profiles & Configs",
-                subtitle = "VLESS, Trojan, Cloudflare WARP, MASQUE & Subscriptions",
+                title = "Xray Configurations (Room DB)",
+                subtitle = "Manage server addresses, ports, transports & per-config obfuscation",
                 modifier = Modifier.widthIn(max = 600.dp),
                 trailing = {
-                    if (uiState.profiles.isNotEmpty()) {
+                    if (uiState.xrayConfigs.isNotEmpty()) {
                         OutlinedButton(
                             onClick = onPingAll,
-                            enabled = !uiState.isPingingProfiles,
+                            enabled = !uiState.isPingingConfigs,
                             modifier = Modifier.testTag("ping_all_profiles_button")
                         ) {
-                            if (uiState.isPingingProfiles) {
+                            if (uiState.isPingingConfigs) {
                                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                             } else {
                                 Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -131,7 +142,6 @@ fun ProfilesScreen(
             )
         }
 
-        // Action Buttons Row
         item {
             Row(
                 modifier = Modifier
@@ -146,7 +156,7 @@ fun ProfilesScreen(
                 ) {
                     Icon(Icons.Filled.AutoFixHigh, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.size(6.dp))
-                    Text("BPB Wizard")
+                    Text("New Xray Config")
                 }
 
                 OutlinedButton(
@@ -169,7 +179,6 @@ fun ProfilesScreen(
             }
         }
 
-        // Subscriptions Section
         if (uiState.subscriptions.isNotEmpty()) {
             item {
                 Column(
@@ -196,7 +205,7 @@ fun ProfilesScreen(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = "${sub.profileCount} profiles • ${sub.url}",
+                                        text = "${sub.profileCount} configs • ${sub.url}",
                                         style = MonoCaptionStyle,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
@@ -216,8 +225,7 @@ fun ProfilesScreen(
             }
         }
 
-        // Empty State or Profiles List
-        if (uiState.profiles.isEmpty()) {
+        if (uiState.xrayConfigs.isEmpty()) {
             item {
                 BpbPanelCard(modifier = Modifier.widthIn(max = 600.dp)) {
                     Column(
@@ -234,11 +242,11 @@ fun ProfilesScreen(
                             modifier = Modifier.size(44.dp)
                         )
                         Text(
-                            text = "No BPB Profiles Added Yet",
+                            text = "No Xray Configurations Stored",
                             style = MaterialTheme.typography.titleLarge
                         )
                         Text(
-                            text = "Use the BPB Wizard to configure your Cloudflare Worker / WARP endpoint, import a Base64 subscription link, or paste a VLESS / Trojan / Xray JSON config.",
+                            text = "Create a custom Xray config with server address, port, and fragment/noise obfuscation parameters, or import a subscription/URI.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -246,20 +254,20 @@ fun ProfilesScreen(
                         Button(onClick = { showWizardDialog = true }) {
                             Icon(Icons.Filled.Add, contentDescription = null)
                             Spacer(modifier = Modifier.size(6.dp))
-                            Text("Launch BPB Wizard")
+                            Text("Create Xray Config")
                         }
                     }
                 }
             }
         } else {
-            items(uiState.profiles, key = { it.id }) { profile ->
-                val isActive = profile.id == uiState.activeProfile?.id
+            items(uiState.xrayConfigs, key = { it.id }) { cfg ->
+                val isActive = cfg.id == uiState.activeXrayConfig?.id
                 BpbPanelCard(
                     modifier = Modifier
                         .widthIn(max = 600.dp)
-                        .testTag("profile_card_${profile.id}"),
+                        .testTag("profile_card_${cfg.id}"),
                     highlighted = isActive,
-                    onClick = { onSelectProfile(profile) }
+                    onClick = { onSelectConfig(cfg) }
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -271,9 +279,9 @@ fun ProfilesScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.weight(1f)
                         ) {
-                            ProtocolBadge(protocol = profile.protocolEnum())
+                            ProtocolBadge(protocol = cfg.protocolEnum())
                             Text(
-                                text = profile.name,
+                                text = cfg.name,
                                 style = MaterialTheme.typography.titleMedium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -283,11 +291,11 @@ fun ProfilesScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            LatencyPill(latencyMs = profile.latencyMs)
+                            LatencyPill(latencyMs = cfg.latencyMs)
                             if (isActive) {
                                 Icon(
                                     imageVector = Icons.Filled.CheckCircle,
-                                    contentDescription = "Active profile",
+                                    contentDescription = "Active config",
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -297,57 +305,60 @@ fun ProfilesScreen(
 
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "${profile.address}:${profile.port} • ${profile.transport.uppercase()}/${profile.security.uppercase()} • fp=${profile.fingerprint}",
+                        text = "${cfg.serverAddress}:${cfg.port} • ${cfg.networkTransport.uppercase()}/${cfg.securityType.uppercase()} • fp=${cfg.tlsFingerprint}",
                         style = MonoCaptionStyle,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (profile.sni.isNotBlank()) {
-                        Text(
-                            text = "SNI: ${profile.sni}  Path: ${profile.path}",
-                            style = MonoCaptionStyle,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Text(
+                        text = buildString {
+                            append("Frag: ${if (cfg.fragmentEnabled) "${cfg.fragmentPackets} (${cfg.fragmentLength}B)" else "Off"}")
+                            append(" • Noise: ${if (cfg.udpNoiseEnabled) cfg.udpNoiseType else "Off"}")
+                            if (cfg.muxEnabled) append(" • Mux:${cfg.muxConcurrency}")
+                            if (cfg.psiphonChainEnabled) append(" • +Psiphon")
+                        },
+                        style = MonoCaptionStyle,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(onClick = { onTogglePin(profile) }) {
+                        IconButton(onClick = { obfuscationEditConfig = cfg }) {
                             Icon(
-                                imageVector = if (profile.isPinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-                                contentDescription = "Pin profile",
-                                tint = if (profile.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                imageVector = Icons.Filled.Tune,
+                                contentDescription = "Edit obfuscation parameters"
                             )
                         }
-                        IconButton(onClick = { jsonPreviewProfile = profile }) {
+                        IconButton(onClick = { onTogglePin(cfg) }) {
                             Icon(
-                                imageVector = Icons.Filled.Code,
-                                contentDescription = "Inspect Xray JSON"
+                                imageVector = if (cfg.isPinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                                contentDescription = "Pin config",
+                                tint = if (cfg.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                        IconButton(onClick = { jsonPreviewConfig = cfg }) {
+                            Icon(Icons.Filled.Code, contentDescription = "Inspect Xray JSON")
                         }
                         IconButton(
                             onClick = {
-                                val uri = ConfigParser.toShareUri(profile)
+                                val uri = ConfigParser.toShareUri(cfg.toVpnProfileEntity())
                                 clipboard.setText(AnnotatedString(uri))
                                 onNotify("Copied share URI to clipboard")
                             }
                         ) {
-                            Icon(
-                                imageVector = Icons.Filled.ContentCopy,
-                                contentDescription = "Copy share URI"
-                            )
+                            Icon(Icons.Filled.ContentCopy, contentDescription = "Copy share URI")
                         }
-                        IconButton(onClick = { onDeleteProfile(profile) }) {
+                        IconButton(onClick = { onDeleteConfig(cfg) }) {
                             Icon(
                                 imageVector = Icons.Filled.DeleteOutline,
-                                contentDescription = "Delete profile",
+                                contentDescription = "Delete config",
                                 tint = MaterialTheme.colorScheme.error
                             )
                         }
@@ -378,11 +389,7 @@ fun ProfilesScreen(
                         textStyle = MonoBodyStyle,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    TextButton(
-                        onClick = {
-                            clipboard.getText()?.text?.let { rawInput = it }
-                        }
-                    ) {
+                    TextButton(onClick = { clipboard.getText()?.text?.let { rawInput = it } }) {
                         Icon(Icons.Filled.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.size(6.dp))
                         Text("Paste from Clipboard")
@@ -396,9 +403,7 @@ fun ProfilesScreen(
                         showPasteUriDialog = false
                     },
                     enabled = rawInput.isNotBlank() && !uiState.isImporting
-                ) {
-                    Text("Import")
-                }
+                ) { Text("Import") }
             },
             dismissButton = {
                 TextButton(onClick = { showPasteUriDialog = false }) { Text("Cancel") }
@@ -407,7 +412,7 @@ fun ProfilesScreen(
     }
 
     if (showImportSubDialog) {
-        var subName by remember { mutableStateOf("BPB Panel Sub") }
+        var subName by remember { mutableStateOf("BPB / PattNG Sub") }
         var subUrl by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showImportSubDialog = false },
@@ -424,7 +429,7 @@ fun ProfilesScreen(
                     OutlinedTextField(
                         value = subUrl,
                         onValueChange = { subUrl = it },
-                        label = { Text("https://your-worker.workers.dev/sub/...") },
+                        label = { Text("https://...") },
                         singleLine = true,
                         textStyle = MonoBodyStyle,
                         modifier = Modifier.fillMaxWidth()
@@ -438,9 +443,7 @@ fun ProfilesScreen(
                         showImportSubDialog = false
                     },
                     enabled = subUrl.isNotBlank() && !uiState.isImporting
-                ) {
-                    Text("Fetch & Import")
-                }
+                ) { Text("Fetch & Import") }
             },
             dismissButton = {
                 TextButton(onClick = { showImportSubDialog = false }) { Text("Cancel") }
@@ -449,20 +452,34 @@ fun ProfilesScreen(
     }
 
     if (showWizardDialog) {
-        BpbWizardDialog(
+        XrayConfigWizardDialog(
             onDismiss = { showWizardDialog = false },
-            onSave = { name, proto, domain, cleanIp, port, uuid, transport, path, fp ->
-                onCreateWizardProfile(name, proto, domain, cleanIp, port, uuid, transport, path, fp)
+            onSave = { n, p, addr, sni, port, uuid, tr, path, fp, fe, fpkt, flen, fint, noise, mux, psiphon ->
+                onCreateWizardConfig(
+                    n, p, addr, sni, port, uuid, tr, path, fp,
+                    fe, fpkt, flen, fint, noise, mux, psiphon
+                )
                 showWizardDialog = false
             }
         )
     }
 
-    jsonPreviewProfile?.let { profile ->
-        val xrayJson = remember(profile, uiState.settings) { buildXrayJson(profile) }
+    obfuscationEditConfig?.let { target ->
+        ObfuscationEditorDialog(
+            config = target,
+            onDismiss = { obfuscationEditConfig = null },
+            onSave = { updated ->
+                onUpdateObfuscation(updated)
+                obfuscationEditConfig = null
+            }
+        )
+    }
+
+    jsonPreviewConfig?.let { cfg ->
+        val xrayJson = remember(cfg, uiState.settings) { buildXrayJson(cfg) }
         AlertDialog(
-            onDismissRequest = { jsonPreviewProfile = null },
-            title = { Text("Xray-core JSON • ${profile.name}") },
+            onDismissRequest = { jsonPreviewConfig = null },
+            title = { Text("Xray-core JSON • ${cfg.name}") },
             text = {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -485,7 +502,7 @@ fun ProfilesScreen(
                     onClick = {
                         clipboard.setText(AnnotatedString(xrayJson))
                         onNotify("Copied Xray JSON config")
-                        jsonPreviewProfile = null
+                        jsonPreviewConfig = null
                     }
                 ) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -494,36 +511,189 @@ fun ProfilesScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { jsonPreviewProfile = null }) { Text("Close") }
+                TextButton(onClick = { jsonPreviewConfig = null }) { Text("Close") }
             }
         )
     }
 }
 
 @Composable
-private fun BpbWizardDialog(
+private fun ObfuscationEditorDialog(
+    config: XrayConfigEntity,
+    onDismiss: () -> Unit,
+    onSave: (XrayConfigEntity) -> Unit,
+) {
+    var fragEnabled by remember { mutableStateOf(config.fragmentEnabled) }
+    var fragPackets by remember { mutableStateOf(config.fragmentPackets) }
+    var fragLength by remember { mutableStateOf(config.fragmentLength) }
+    var fragInterval by remember { mutableStateOf(config.fragmentInterval) }
+    var noiseEnabled by remember { mutableStateOf(config.udpNoiseEnabled) }
+    var noisePacket by remember { mutableStateOf(config.udpNoisePacket) }
+    var noiseDelay by remember { mutableStateOf(config.udpNoiseDelay) }
+    var muxEnabled by remember { mutableStateOf(config.muxEnabled) }
+    var psiphonChain by remember { mutableStateOf(config.psiphonChainEnabled) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Obfuscation • ${config.name}") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("TLS Fragment", style = MaterialTheme.typography.titleSmall)
+                    Switch(checked = fragEnabled, onCheckedChange = { fragEnabled = it })
+                }
+                if (fragEnabled) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("tlshello", "1-1", "1-3", "1-5").forEach { mode ->
+                            FilterChip(
+                                selected = fragPackets == mode,
+                                onClick = { fragPackets = mode },
+                                label = { Text(mode, style = MonoCaptionStyle) }
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = fragLength,
+                            onValueChange = { fragLength = it },
+                            label = { Text("Length") },
+                            singleLine = true,
+                            textStyle = MonoBodyStyle,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = fragInterval,
+                            onValueChange = { fragInterval = it },
+                            label = { Text("Interval") },
+                            singleLine = true,
+                            textStyle = MonoBodyStyle,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("UDP Noise Padding", style = MaterialTheme.typography.titleSmall)
+                    Switch(checked = noiseEnabled, onCheckedChange = { noiseEnabled = it })
+                }
+                if (noiseEnabled) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = noisePacket,
+                            onValueChange = { noisePacket = it },
+                            label = { Text("Noise Packet") },
+                            singleLine = true,
+                            textStyle = MonoBodyStyle,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = noiseDelay,
+                            onValueChange = { noiseDelay = it },
+                            label = { Text("Delay (ms)") },
+                            singleLine = true,
+                            textStyle = MonoBodyStyle,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Xray Mux Multiplexing", style = MaterialTheme.typography.titleSmall)
+                    Switch(checked = muxEnabled, onCheckedChange = { muxEnabled = it })
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Chain via Psiphon", style = MaterialTheme.typography.titleSmall)
+                    Switch(checked = psiphonChain, onCheckedChange = { psiphonChain = it })
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        config.copy(
+                            fragmentEnabled = fragEnabled,
+                            fragmentPackets = fragPackets,
+                            fragmentLength = fragLength,
+                            fragmentInterval = fragInterval,
+                            udpNoiseEnabled = noiseEnabled,
+                            udpNoisePacket = noisePacket,
+                            udpNoiseDelay = noiseDelay,
+                            muxEnabled = muxEnabled,
+                            psiphonChainEnabled = psiphonChain
+                        )
+                    )
+                }
+            ) { Text("Save to Room") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun XrayConfigWizardDialog(
     onDismiss: () -> Unit,
     onSave: (
         name: String,
         protocol: ProtocolType,
-        workerDomain: String,
-        cleanIpOrHost: String,
+        serverAddress: String,
+        sni: String,
         port: Int,
         uuidOrSecret: String,
         transport: String,
         path: String,
         fingerprint: String,
+        fragmentEnabled: Boolean,
+        fragmentPackets: String,
+        fragmentLength: String,
+        fragmentInterval: String,
+        udpNoiseEnabled: Boolean,
+        muxEnabled: Boolean,
+        psiphonChainEnabled: Boolean,
     ) -> Unit,
 ) {
-    var name by remember { mutableStateOf("BPB Worker Profile") }
+    var name by remember { mutableStateOf("BPB / PattNG Xray Node") }
     var protocol by remember { mutableStateOf(ProtocolType.VLESS) }
-    var workerDomain by remember { mutableStateOf("") }
-    var cleanIp by remember { mutableStateOf("") }
+    var serverAddress by remember { mutableStateOf("") }
+    var sni by remember { mutableStateOf("") }
     var port by remember { mutableIntStateOf(443) }
     var uuidOrSecret by remember { mutableStateOf(UUID.randomUUID().toString()) }
     var transport by remember { mutableStateOf("ws") }
     var path by remember { mutableStateOf("/?ed=2560") }
     var fingerprint by remember { mutableStateOf("chrome") }
+    var fragmentEnabled by remember { mutableStateOf(true) }
+    var fragmentPackets by remember { mutableStateOf("tlshello") }
+    var fragmentLength by remember { mutableStateOf("10-20") }
+    var fragmentInterval by remember { mutableStateOf("10-20") }
+    var udpNoiseEnabled by remember { mutableStateOf(true) }
+    var muxEnabled by remember { mutableStateOf(false) }
+    var psiphonChain by remember { mutableStateOf(false) }
 
     val ports = listOf(443, 2053, 2083, 2087, 2096, 8443)
     val protocols = listOf(ProtocolType.VLESS, ProtocolType.TROJAN, ProtocolType.WARP, ProtocolType.MASQUE)
@@ -532,19 +702,14 @@ private fun BpbWizardDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("BPB Panel Wizard") },
+        title = { Text("Xray Config Builder") },
         text = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = "Protocol",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -561,34 +726,29 @@ private fun BpbWizardDialog(
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Profile Name") },
+                    label = { Text("Config Name") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
-                    value = workerDomain,
-                    onValueChange = { workerDomain = it },
-                    label = { Text("Cloudflare Worker / Pages Domain (SNI)") },
+                    value = serverAddress,
+                    onValueChange = { serverAddress = it },
+                    label = { Text("Server Address / Clean IP") },
+                    placeholder = { Text("104.16.x.x or domain") },
+                    singleLine = true,
+                    textStyle = MonoBodyStyle,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = sni,
+                    onValueChange = { sni = it },
+                    label = { Text("SNI / Worker Domain") },
                     placeholder = { Text("panel.example.workers.dev") },
                     singleLine = true,
                     textStyle = MonoBodyStyle,
                     modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedTextField(
-                    value = cleanIp,
-                    onValueChange = { cleanIp = it },
-                    label = { Text("Clean IP / Endpoint (Optional)") },
-                    placeholder = { Text("104.16.x.x or leave blank for domain") },
-                    singleLine = true,
-                    textStyle = MonoBodyStyle,
-                    modifier = Modifier.fillMaxWidth()
-                )
 
-                Text(
-                    text = "TLS Port",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -611,40 +771,28 @@ private fun BpbWizardDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                if (protocol == ProtocolType.VLESS || protocol == ProtocolType.TROJAN) {
-                    Text(
-                        text = "Transport",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        transports.forEach { t ->
-                            FilterChip(
-                                selected = transport == t,
-                                onClick = { transport = t },
-                                label = { Text(t.uppercase()) }
-                            )
-                        }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    transports.forEach { t ->
+                        FilterChip(
+                            selected = transport == t,
+                            onClick = { transport = t },
+                            label = { Text(t.uppercase()) }
+                        )
                     }
-
-                    OutlinedTextField(
-                        value = path,
-                        onValueChange = { path = it },
-                        label = { Text("WebSocket / xHTTP Path") },
-                        singleLine = true,
-                        textStyle = MonoBodyStyle,
-                        modifier = Modifier.fillMaxWidth()
-                    )
                 }
 
-                Text(
-                    text = "uTLS Fingerprint",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                OutlinedTextField(
+                    value = path,
+                    onValueChange = { path = it },
+                    label = { Text("Path / ServiceName") },
+                    singleLine = true,
+                    textStyle = MonoBodyStyle,
+                    modifier = Modifier.fillMaxWidth()
                 )
+
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -657,17 +805,53 @@ private fun BpbWizardDialog(
                         )
                     }
                 }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("TLS Fragment ($fragmentPackets)", style = MaterialTheme.typography.titleSmall)
+                    Switch(checked = fragmentEnabled, onCheckedChange = { fragmentEnabled = it })
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("UDP Noise Obfuscation", style = MaterialTheme.typography.titleSmall)
+                    Switch(checked = udpNoiseEnabled, onCheckedChange = { udpNoiseEnabled = it })
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Mux Multiplexing", style = MaterialTheme.typography.titleSmall)
+                    Switch(checked = muxEnabled, onCheckedChange = { muxEnabled = it })
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Chain with Psiphon", style = MaterialTheme.typography.titleSmall)
+                    Switch(checked = psiphonChain, onCheckedChange = { psiphonChain = it })
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(name, protocol, workerDomain, cleanIp, port, uuidOrSecret, transport, path, fingerprint)
+                    onSave(
+                        name, protocol, serverAddress, sni, port, uuidOrSecret,
+                        transport, path, fingerprint, fragmentEnabled,
+                        fragmentPackets, fragmentLength, fragmentInterval,
+                        udpNoiseEnabled, muxEnabled, psiphonChain
+                    )
                 },
-                enabled = workerDomain.isNotBlank() || cleanIp.isNotBlank()
-            ) {
-                Text("Create Profile")
-            }
+                enabled = serverAddress.isNotBlank() || sni.isNotBlank()
+            ) { Text("Save Config") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }

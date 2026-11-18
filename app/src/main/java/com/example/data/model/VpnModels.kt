@@ -3,6 +3,7 @@ package com.example.data.model
 enum class ProtocolType(val label: String) {
     VLESS("VLESS"),
     TROJAN("Trojan"),
+    VMESS("VMess"),
     WARP("WARP"),
     MASQUE("MASQUE"),
     SHADOWSOCKS("Shadowsocks"),
@@ -12,15 +13,114 @@ enum class ProtocolType(val label: String) {
 }
 
 enum class TunnelMode(val title: String, val subtitle: String) {
+    AETHER_WARP(
+        title = "Aether WARP",
+        subtitle = "User-space WARP/MASQUE tunnel with Psiphon chain & local SOCKS5"
+    ),
+    PROFILE_TUNNEL(
+        title = "Xray Config",
+        subtitle = "Stored Xray profile handshake + obfuscation & DoH routing"
+    ),
     SERVERLESS_DOH(
         title = "Serverless DoH",
         subtitle = "Encrypted DNS-over-HTTPS tunnel with DPI & ad-block routing"
     ),
-    PROFILE_TUNNEL(
-        title = "BPB Profile",
-        subtitle = "Verified endpoint handshake + encrypted DoH & fragment rules"
+}
+
+enum class AetherTransportMode(
+    val flag: String,
+    val label: String,
+    val defaultPort: Int,
+    val description: String,
+) {
+    MASQUE(
+        flag = "--masque",
+        label = "MASQUE (H3/H2)",
+        defaultPort = 443,
+        description = "Tunnels WARP over QUIC/HTTP/3 or HTTP/2 on port 443"
+    ),
+    WIREGUARD(
+        flag = "--wg",
+        label = "WireGuard",
+        defaultPort = 2408,
+        description = "Native Cloudflare WARP UDP tunnel on port 2408 & fallbacks"
+    ),
+    GOOL(
+        flag = "--gool",
+        label = "Gool (WG-in-MASQUE)",
+        defaultPort = 443,
+        description = "Tunnels WireGuard inside a MASQUE outer layer to bypass UDP blocks"
+    ),
+    GOOL_CLASSIC(
+        flag = "--gool-classic",
+        label = "Classic Gool (WG²)",
+        defaultPort = 2408,
+        description = "Nested WARP-in-WARP double hop for clean exit IP"
+    ),
+    MIM(
+        flag = "--mim",
+        label = "MIM (MASQUE²)",
+        defaultPort = 443,
+        description = "Nested MASQUE-in-MASQUE multi-hop encrypted routing"
     ),
 }
+
+enum class PsiphonTransport(val id: String, val label: String, val description: String) {
+    OSSH("OSSH", "OSSH", "Obfuscated SSH stream for resilient bypass"),
+    FRONTED_MEEK("FRONTED-MEEK-OSSH", "Fronted Meek", "CDN domain-fronted HTTPS meek tunnel"),
+    UNFRONTED_MEEK("UNFRONTED-MEEK-OSSH", "Meek HTTPS", "Direct HTTPS meek payload encapsulation"),
+    QUIC_OSSH("QUIC-OSSH", "QUIC OSSH", "Low-latency obfuscated QUIC transport"),
+    INPROXY_WEBRTC("INPROXY-WEBRTC", "Inproxy WebRTC", "Peer-assisted WebRTC bridge transport"),
+}
+
+enum class PsiphonChainOrder(val label: String, val routeSummary: String) {
+    WARP_OVER_PSIPHON("WARP → Psiphon", "Device → Aether WARP → Psiphon Exit"),
+    PSIPHON_OVER_WARP("Psiphon → WARP", "Device → Psiphon Upstream → Aether WARP Exit"),
+}
+
+enum class PsiphonRegion(val code: String, val label: String) {
+    AUTO("", "Fastest Auto"),
+    DE("DE", "Germany (DE)"),
+    NL("NL", "Netherlands (NL)"),
+    US("US", "United States (US)"),
+    GB("GB", "United Kingdom (GB)"),
+    CH("CH", "Switzerland (CH)"),
+    SE("SE", "Sweden (SE)"),
+    SG("SG", "Singapore (SG)"),
+    JP("JP", "Japan (JP)"),
+    CA("CA", "Canada (CA)"),
+}
+
+data class AetherWarpConfig(
+    val transportMode: AetherTransportMode = AetherTransportMode.GOOL,
+    val endpointHost: String = "162.159.192.1",
+    val endpointPort: Int = 443,
+    val masqueSni: String = "consumer-masque.cloudflareclient.com",
+    val noiseEnabled: Boolean = true,
+    val tlsFragmentEnabled: Boolean = true,
+    val localSocksEnabled: Boolean = true,
+    val localSocksPort: Int = 1819,
+    val autoDiscoverEndpoint: Boolean = true,
+)
+
+data class PsiphonChainConfig(
+    val enabled: Boolean = true,
+    val chainOrder: PsiphonChainOrder = PsiphonChainOrder.WARP_OVER_PSIPHON,
+    val transport: PsiphonTransport = PsiphonTransport.FRONTED_MEEK,
+    val region: PsiphonRegion = PsiphonRegion.AUTO,
+    val upstreamHost: String = "127.0.0.1",
+    val upstreamPort: Int = 1080,
+    val useBuiltInRelayWhenNoExternal: Boolean = true,
+    val torAfterChain: Boolean = false,
+)
+
+data class WarpEndpointCandidate(
+    val ip: String,
+    val port: Int,
+    val modeLabel: String,
+    val latencyMs: Long,
+    val dataPlaneVerified: Boolean,
+)
 
 enum class ConnectionStatus(val label: String) {
     IDLE("Disconnected"),
@@ -151,14 +251,17 @@ data class LogEntry(
 
 data class TunnelStats(
     val status: ConnectionStatus = ConnectionStatus.IDLE,
-    val mode: TunnelMode = TunnelMode.SERVERLESS_DOH,
-    val activeProfileName: String = "Serverless DoH",
-    val activeEndpoint: String = "1.1.1.1:443",
+    val mode: TunnelMode = TunnelMode.AETHER_WARP,
+    val activeProfileName: String = "Aether WARP + Psiphon",
+    val activeEndpoint: String = "162.159.192.1:443",
+    val activeChainLabel: String = "",
+    val localSocksAddress: String? = null,
     val startedAtMs: Long = 0L,
     val rxBytes: Long = 0L,
     val txBytes: Long = 0L,
     val dnsQueriesHandled: Long = 0L,
     val blockedQueriesCount: Long = 0L,
+    val proxiedConnections: Long = 0L,
     val verifiedLatencyMs: Long? = null,
     val errorMessage: String? = null,
 )

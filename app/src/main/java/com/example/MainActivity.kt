@@ -18,14 +18,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Radar
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Radar
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -60,6 +61,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.data.model.ConnectionStatus
 import com.example.ui.BpbViewModel
+import com.example.ui.screens.AetherWarpScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.LogsScreen
 import com.example.ui.screens.PacketObfuscationScreen
@@ -73,6 +75,7 @@ import kotlinx.coroutines.launch
 
 object BpbRoutes {
     const val HOME = "home"
+    const val AETHER = "aether"
     const val PROFILES = "profiles"
     const val SCANNER = "scanner"
     const val SETTINGS = "settings"
@@ -130,7 +133,6 @@ fun BpbVpnAppRoot(viewModel: BpbViewModel) {
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { _ ->
-        // Proceed with VPN start whether notification permission was granted or denied
         val prepareIntent = VpnService.prepare(context)
         if (prepareIntent != null) {
             vpnPermissionLauncher.launch(prepareIntent)
@@ -179,8 +181,15 @@ fun BpbVpnAppRoot(viewModel: BpbViewModel) {
                 testTag = "nav_home"
             ),
             TopLevelNavItem(
+                route = BpbRoutes.AETHER,
+                label = "Aether",
+                selectedIcon = Icons.Filled.Security,
+                unselectedIcon = Icons.Outlined.Security,
+                testTag = "nav_aether"
+            ),
+            TopLevelNavItem(
                 route = BpbRoutes.PROFILES,
-                label = "Profiles",
+                label = "Xray",
                 selectedIcon = Icons.Filled.Hub,
                 unselectedIcon = Icons.Outlined.Hub,
                 testTag = "nav_profiles"
@@ -238,7 +247,7 @@ fun BpbVpnAppRoot(viewModel: BpbViewModel) {
                                     contentDescription = item.label
                                 )
                             },
-                            label = { Text(item.label) },
+                            label = { Text(item.label, maxLines = 1) },
                             modifier = Modifier.testTag(item.testTag)
                         )
                     }
@@ -266,7 +275,7 @@ fun BpbVpnAppRoot(viewModel: BpbViewModel) {
                                     contentDescription = item.label
                                 )
                             },
-                            label = { Text(item.label) },
+                            label = { Text(item.label, maxLines = 1) },
                             modifier = Modifier.testTag(item.testTag)
                         )
                     }
@@ -283,7 +292,8 @@ fun BpbVpnAppRoot(viewModel: BpbViewModel) {
                             uiState = uiState,
                             onToggleConnection = { requestStartOrToggleVpn() },
                             onModeSelected = { viewModel.setTunnelMode(it) },
-                            onSelectProfile = { viewModel.selectProfile(it) },
+                            onSelectXrayConfig = { viewModel.selectXrayConfig(it) },
+                            onNavigateToAether = { navigateTopLevel(BpbRoutes.AETHER) },
                             onNavigateToProfiles = { navigateTopLevel(BpbRoutes.PROFILES) },
                             onNavigateToScanner = { openDnsTab ->
                                 scannerInitialTab = if (openDnsTab) 1 else 0
@@ -293,19 +303,31 @@ fun BpbVpnAppRoot(viewModel: BpbViewModel) {
                         )
                     }
 
+                    composable(BpbRoutes.AETHER) {
+                        AetherWarpScreen(
+                            uiState = uiState,
+                            onUpdateAether = { viewModel.updateAetherConfig(it) },
+                            onUpdatePsiphon = { viewModel.updatePsiphonConfig(it) },
+                            onDiscoverEndpoints = { viewModel.discoverWarpEndpoints() },
+                            onApplyCandidate = { viewModel.applyWarpCandidate(it) }
+                        )
+                    }
+
                     composable(BpbRoutes.PROFILES) {
                         ProfilesScreen(
                             uiState = uiState,
-                            onSelectProfile = { viewModel.selectProfile(it) },
-                            onTogglePin = { viewModel.togglePinProfile(it) },
-                            onDeleteProfile = { viewModel.deleteProfile(it) },
-                            onPingAll = { viewModel.pingAllProfiles() },
+                            onSelectConfig = { viewModel.selectXrayConfig(it) },
+                            onTogglePin = { viewModel.togglePinXrayConfig(it) },
+                            onDeleteConfig = { viewModel.deleteXrayConfig(it) },
+                            onUpdateObfuscation = { viewModel.updateXrayObfuscation(it) },
+                            onPingAll = { viewModel.pingAllConfigs() },
                             onImportUriOrPayload = { viewModel.importFromUriOrPayload(it) },
                             onImportSubscription = { name, url -> viewModel.importSubscription(name, url) },
                             onRefreshSubscription = { viewModel.refreshSubscription(it) },
-                            onCreateWizardProfile = { name, proto, domain, cleanIp, port, uuid, transport, path, fp ->
-                                viewModel.createBpbWizardProfile(
-                                    name, proto, domain, cleanIp, port, uuid, transport, path, fp
+                            onCreateWizardConfig = { n, p, addr, sni, port, uuid, tr, path, fp, fe, fpkt, flen, fint, noise, mux, psiphon ->
+                                viewModel.createXrayConfigFromWizard(
+                                    n, p, addr, sni, port, uuid, tr, path, fp,
+                                    fe, fpkt, flen, fint, noise, mux, psiphon
                                 )
                             },
                             buildXrayJson = { viewModel.buildXrayJsonFor(it) },
@@ -320,7 +342,7 @@ fun BpbVpnAppRoot(viewModel: BpbViewModel) {
                             onUpdateScannerConfig = { viewModel.updateScannerConfig(it) },
                             onStartScan = { viewModel.startCleanIpScan() },
                             onStopScan = { viewModel.stopCleanIpScan() },
-                            onApplyCleanIp = { viewModel.applyCleanIpToActiveProfile(it) },
+                            onApplyCleanIp = { viewModel.applyCleanIpToActiveConfig(it) },
                             onSelectDnsPreset = { viewModel.selectDnsPreset(it) },
                             onSaveCustomDoh = { url, sni -> viewModel.saveCustomDoh(url, sni) },
                             onTestAllDns = { viewModel.testAllDns(it) },

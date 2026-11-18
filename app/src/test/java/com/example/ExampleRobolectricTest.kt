@@ -2,13 +2,18 @@ package com.example
 
 import android.content.Context
 import android.util.Base64
+import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.core.ConfigParser
+import com.example.data.local.BpbDatabase
+import com.example.data.local.XrayConfigEntity
 import com.example.data.model.BuiltInDnsPresets
 import com.example.data.model.FragmentConfig
 import com.example.data.model.ProtocolType
 import com.example.data.model.RoutingConfig
 import com.example.data.model.UdpNoisePreset
+import com.example.data.repository.XrayConfigRepository
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -27,6 +32,59 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
         assertEquals("BPB VPN", appName)
+    }
+
+    @Test
+    fun `room xray config repository stores multiple configs and obfuscation params`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, BpbDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val repo = XrayConfigRepository(db.xrayConfigDao())
+
+        val id1 = repo.saveConfig(
+            XrayConfigEntity(
+                name = "PattNG VLESS Edge",
+                protocol = ProtocolType.VLESS.name,
+                serverAddress = "104.16.10.2",
+                port = 443,
+                userIdOrPassword = "11111111-2222-3333-4444-555555555555",
+                sni = "cdn.example.workers.dev",
+                fragmentEnabled = true,
+                fragmentPackets = "tlshello",
+                fragmentLength = "10-20",
+                fragmentInterval = "10-20",
+                udpNoiseEnabled = true,
+                psiphonChainEnabled = true
+            ),
+            activate = true
+        )
+        val id2 = repo.saveConfig(
+            XrayConfigEntity(
+                name = "Aether MASQUE Hop",
+                protocol = ProtocolType.MASQUE.name,
+                serverAddress = "162.159.192.1",
+                port = 8443,
+                fragmentEnabled = false,
+                muxEnabled = true,
+                muxConcurrency = 16
+            ),
+            activate = false
+        )
+
+        val active = repo.getActiveOrFirst()
+        assertNotNull(active)
+        assertEquals(id1, active?.id)
+        assertEquals("tlshello", active?.fragmentPackets)
+        assertTrue(active?.psiphonChainEnabled == true)
+
+        repo.setActive(id2)
+        val switched = repo.getActiveOrFirst()
+        assertEquals(id2, switched?.id)
+        assertEquals(8443, switched?.port)
+        assertEquals(16, switched?.muxConcurrency)
+
+        db.close()
     }
 
     @Test
