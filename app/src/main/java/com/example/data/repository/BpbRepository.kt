@@ -4,10 +4,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import com.example.core.BpbLogBuffer
-import com.example.core.CloudflareScanner
-import com.example.core.ConfigParser
 import com.example.core.DnsOverHttpsClient
 import com.example.core.WarpEndpointScanner
+import com.example.scanner.CloudflareCleanIpScanner
 import com.example.data.local.BpbDatabase
 import com.example.data.local.CleanIpEntity
 import com.example.data.local.SubscriptionEntity
@@ -182,7 +181,7 @@ class BpbRepository(private val context: Context) {
         onProgress: (ScanProgress) -> Unit,
     ): List<CleanIpEntity> {
         cleanIpDao.clearAll()
-        val finalResults = CloudflareScanner.runScan(
+        val finalResults = CloudflareCleanIpScanner.runScan(
             config = config,
             onProgress = onProgress,
             onHit = {}
@@ -192,6 +191,8 @@ class BpbRepository(private val context: Context) {
         }
         return finalResults
     }
+
+    suspend fun getOptimalCleanIp(): CleanIpEntity? = cleanIpDao.getOptimalCleanIp()
 
     suspend fun testAllDnsResolvers(domain: String, customDohUrl: String): List<DnsTestResult> = coroutineScope {
         BpbLogBuffer.info("DNS", "Benchmarking all DoH resolvers for '$domain'…")
@@ -235,7 +236,9 @@ class BpbRepository(private val context: Context) {
 
     suspend fun setTunnelMode(mode: TunnelMode) = prefsRepo.setTunnelMode(mode)
     suspend fun setDnsPreset(presetId: String) = prefsRepo.setDnsPreset(presetId)
-    suspend fun setCustomDoh(url: String, fakeSni: String) = prefsRepo.setCustomDoh(url, fakeSni)
+    suspend fun setCustomDoh(url: String, fakeSni: String, bootstrapIp: String? = null) =
+        prefsRepo.setCustomDoh(url, fakeSni, bootstrapIp)
+    suspend fun setDohBootstrapIp(ip: String) = prefsRepo.setDohBootstrapIp(ip)
     suspend fun updateFragmentConfig(config: FragmentConfig) = prefsRepo.updateFragmentConfig(config)
     suspend fun setUdpNoisePreset(preset: UdpNoisePreset) = prefsRepo.setUdpNoisePreset(preset)
     suspend fun updateRoutingConfig(config: RoutingConfig) = prefsRepo.updateRoutingConfig(config)

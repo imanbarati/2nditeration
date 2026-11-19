@@ -272,13 +272,39 @@ data class InstalledAppInfo(
     val isSystem: Boolean = false,
 )
 
+data class DnsQueryLogItem(
+    val id: Long,
+    val timestamp: String,
+    val domain: String,
+    val resolvedIps: List<String>,
+    val latencyMs: Long,
+    val fromCache: Boolean,
+    val blocked: Boolean,
+    val upstreamLabel: String,
+)
+
+data class DohTunnelMetrics(
+    val isRunning: Boolean = false,
+    val activeUpstream: String = "",
+    val bootstrapIp: String = "",
+    val localUdpPort: Int? = null,
+    val totalQueries: Long = 0L,
+    val cacheHits: Long = 0L,
+    val dohForwarded: Long = 0L,
+    val blockedQueries: Long = 0L,
+    val failoverCount: Long = 0L,
+    val avgLatencyMs: Long = 0L,
+    val recentQueries: List<DnsQueryLogItem> = emptyList(),
+)
+
 data class ScannerConfig(
-    val cidrRange: String = "104.16.0.0/13",
+    val cidrRange: String = "ALL",
     val port: Int = 443,
     val sni: String = "speed.cloudflare.com",
     val sampleCount: Int = 40,
     val maxLatencyMs: Int = 500,
     val verifyTls: Boolean = true,
+    val verifyCloudflareTrace: Boolean = true,
     val runSpeedProbe: Boolean = false,
     val concurrency: Int = 16,
 )
@@ -289,4 +315,6 @@ data class ScanProgress(
     val totalCount: Int = 0,
     val foundCount: Int = 0,
     val currentIp: String = "",
+    val bestIpSoFar: String = "",
+    val bestLatencySoFarMs: Long? = null,
 )

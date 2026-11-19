@@ -34,6 +34,7 @@ data class BpbSettingsSnapshot(
     val tunnelMode: TunnelMode = TunnelMode.AETHER_WARP,
     val activeDnsPresetId: String = BuiltInDnsPresets.all.first().id,
     val customDohUrl: String = "",
+    val dohBootstrapIp: String = "",
     val fakeSniHost: String = "www.cloudflare.com",
     val fragmentConfig: FragmentConfig = FragmentConfig(),
     val udpNoisePreset: UdpNoisePreset = UdpNoisePreset.AMNEZIA_WG,
@@ -52,6 +53,7 @@ class BpbPreferencesRepository(private val context: Context) {
         val TUNNEL_MODE = stringPreferencesKey("tunnel_mode")
         val DNS_PRESET_ID = stringPreferencesKey("dns_preset_id")
         val CUSTOM_DOH_URL = stringPreferencesKey("custom_doh_url")
+        val DOH_BOOTSTRAP_IP = stringPreferencesKey("doh_bootstrap_ip")
         val FAKE_SNI_HOST = stringPreferencesKey("fake_sni_host")
 
         val FRAGMENT_ENABLED = booleanPreferencesKey("fragment_enabled")
@@ -102,6 +104,7 @@ class BpbPreferencesRepository(private val context: Context) {
                 ?: TunnelMode.AETHER_WARP,
             activeDnsPresetId = prefs[Keys.DNS_PRESET_ID] ?: BuiltInDnsPresets.all.first().id,
             customDohUrl = prefs[Keys.CUSTOM_DOH_URL] ?: "",
+            dohBootstrapIp = prefs[Keys.DOH_BOOTSTRAP_IP] ?: "",
             fakeSniHost = prefs[Keys.FAKE_SNI_HOST] ?: "www.cloudflare.com",
             fragmentConfig = FragmentConfig(
                 enabled = prefs[Keys.FRAGMENT_ENABLED] ?: true,
@@ -176,11 +179,18 @@ class BpbPreferencesRepository(private val context: Context) {
         context.bpbDataStore.edit { it[Keys.DNS_PRESET_ID] = presetId }
     }
 
-    suspend fun setCustomDoh(url: String, fakeSni: String) {
+    suspend fun setCustomDoh(url: String, fakeSni: String, bootstrapIp: String? = null) {
         context.bpbDataStore.edit {
             it[Keys.CUSTOM_DOH_URL] = url.trim()
             it[Keys.FAKE_SNI_HOST] = fakeSni.trim().ifEmpty { "www.cloudflare.com" }
+            if (bootstrapIp != null) {
+                it[Keys.DOH_BOOTSTRAP_IP] = bootstrapIp.trim()
+            }
         }
+    }
+
+    suspend fun setDohBootstrapIp(ip: String) {
+        context.bpbDataStore.edit { it[Keys.DOH_BOOTSTRAP_IP] = ip.trim() }
     }
 
     suspend fun updateFragmentConfig(config: FragmentConfig) {

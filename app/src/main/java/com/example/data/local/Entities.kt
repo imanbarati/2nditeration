@@ -50,6 +50,9 @@ data class CleanIpEntity(
     val cidr: String,
     val latencyMs: Long,
     val tlsSuccess: Boolean,
+    val tlsProtocol: String = "",
+    val colo: String = "",
     val downloadKbps: Int? = null,
+    val score: Int = 0,
     val scannedAt: Long = System.currentTimeMillis(),
 )

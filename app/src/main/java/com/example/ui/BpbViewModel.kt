@@ -13,6 +13,7 @@ import com.example.data.model.AetherWarpConfig
 import com.example.data.model.BuiltInDnsPresets
 import com.example.data.model.ConnectionStatus
 import com.example.data.model.DnsTestResult
+import com.example.data.model.DohTunnelMetrics
 import com.example.data.model.FragmentConfig
 import com.example.data.model.InstalledAppInfo
 import com.example.data.model.LogEntry
@@ -29,6 +30,8 @@ import com.example.data.model.UdpNoisePreset
 import com.example.data.model.WarpEndpointCandidate
 import com.example.data.preferences.BpbSettingsSnapshot
 import com.example.data.repository.BpbRepository
+import com.example.dns.ServerlessDohTunnelEngine
+import com.example.dns.ServerlessDohVpnService
 import com.example.vpn.BaseVpnService
 import com.example.vpn.BpbVpnService
 import com.example.vpn.VpnStateHolder
@@ -87,6 +90,7 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
     private var scanJob: Job? = null
 
     val logs: StateFlow<List<LogEntry>> = BpbLogBuffer.logs
+    val dohMetrics: StateFlow<DohTunnelMetrics> = ServerlessDohTunnelEngine.metrics
 
     private data class CoreSnapshot(
         val stats: TunnelStats,
@@ -172,7 +176,12 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startVpnService() {
         val ctx = getApplication<Application>()
-        val intent = Intent(ctx, BpbVpnService::class.java).apply {
+        val targetService = if (uiState.value.settings.tunnelMode == TunnelMode.SERVERLESS_DOH) {
+            ServerlessDohVpnService::class.java
+        } else {
+            BpbVpnService::class.java
+        }
+        val intent = Intent(ctx, targetService).apply {
             action = BaseVpnService.ACTION_START
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -182,12 +191,29 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun startServerlessDohService() {
+        viewModelScope.launch {
+            repository.setTunnelMode(TunnelMode.SERVERLESS_DOH)
+            val ctx = getApplication<Application>()
+            val intent = Intent(ctx, ServerlessDohVpnService::class.java).apply {
+                action = BaseVpnService.ACTION_START
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ctx.startForegroundService(intent)
+            } else {
+                ctx.startService(intent)
+            }
+        }
+    }
+
     fun stopVpnService() {
         val ctx = getApplication<Application>()
-        val intent = Intent(ctx, BpbVpnService::class.java).apply {
-            action = BaseVpnService.ACTION_STOP
+        val activeService = if (uiState.value.tunnelStats.mode == TunnelMode.SERVERLESS_DOH) {
+            ServerlessDohVpnService::class.java
+        } else {
+            BpbVpnService::class.java
         }
-        ctx.startService(intent)
+        ctx.startService(Intent(ctx, activeService).apply { action = BaseVpnService.ACTION_STOP })
     }
 
     fun setTunnelMode(mode: TunnelMode) {
@@ -378,14 +404,20 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
     fun applyCleanIpToActiveConfig(ip: String) {
         viewModelScope.launch {
             val active = uiState.value.activeXrayConfig
-            if (active == null) {
-                val aether = uiState.value.settings.aetherConfig
-                repository.updateAetherConfig(aether.copy(endpointHost = ip))
-                emitMessage("Applied $ip to Aether WARP endpoint")
-                return@launch
+            if (active != null) {
+                repository.applyCleanIpToXrayConfig(active.id, ip)
             }
-            repository.applyCleanIpToXrayConfig(active.id, ip)
-            emitMessage("Applied $ip to ${active.name}")
+            val aether = uiState.value.settings.aetherConfig
+            repository.updateAetherConfig(aether.copy(endpointHost = ip))
+            val targetLabel = active?.name ?: "Aether WARP"
+            emitMessage("Applied optimal Clean IP $ip to $targetLabel")
+        }
+    }
+
+    fun applyCleanIpAsDohBootstrap(ip: String) {
+        viewModelScope.launch {
+            repository.setDohBootstrapIp(ip)
+            emitMessage("Pinned $ip as Serverless DoH Bootstrap IP")
         }
     }
 
@@ -410,10 +442,10 @@ class BpbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveCustomDoh(url: String, fakeSni: String) {
+    fun saveCustomDoh(url: String, fakeSni: String, bootstrapIp: String? = null) {
         viewModelScope.launch {
-            repository.setCustomDoh(url, fakeSni)
-            emitMessage("Saved Serverless DNS & Fake SNI settings")
+            repository.setCustomDoh(url, fakeSni, bootstrapIp)
+            emitMessage("Saved Serverless DoH & Bootstrap settings")
         }
     }
 

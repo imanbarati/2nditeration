@@ -1,32 +1,32 @@
 package com.example.vpn
 
 import com.example.core.BpbLogBuffer
-import com.example.core.DnsOverHttpsClient
 import com.example.core.LocalSocksProxyServer
 import com.example.core.ProfileLatencyTester
 import com.example.core.WarpEndpointScanner
 import com.example.data.local.BpbDatabase
+import com.example.data.local.XrayConfigEntity
 import com.example.data.model.BuiltInDnsPresets
 import com.example.data.model.PsiphonChainOrder
-import com.example.data.model.RoutingConfig
 import com.example.data.model.TunnelMode
 import com.example.data.preferences.BpbPreferencesRepository
 import com.example.data.preferences.BpbSettingsSnapshot
+import com.example.dns.DnsPacketBuilder
+import com.example.dns.ServerlessDohTunnelEngine
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
 import java.io.FileOutputStream
 import javax.net.SocketFactory
 
 /**
  * Concrete VPN tunnel service extending BaseVpnService.
  * Coordinates Aether WARP + Psiphon Chain (with user-space SOCKS5 127.0.0.1:1819),
- * Room-stored Xray Config verification, and Serverless DoH encrypted DNS packet routing.
+ * Room-stored Xray Config verification, and Serverless DoH encrypted DNS tunneling.
  */
 class BpbVpnService : BaseVpnService() {
 
-    private var dohClient: OkHttpClient? = null
+    private var dohEngine: ServerlessDohTunnelEngine? = null
     private var dohUrl: String = BuiltInDnsPresets.all.first().endpoint
-    private var routingConfig: RoutingConfig = RoutingConfig()
+    private var dohBootstrapIp: String = ""
     private var latestSettings: BpbSettingsSnapshot = BpbSettingsSnapshot()
     private var localSocksProxy: LocalSocksProxyServer? = null
 
@@ -34,17 +34,17 @@ class BpbVpnService : BaseVpnService() {
         val prefsRepo = BpbPreferencesRepository(applicationContext)
         val settings = prefsRepo.getSnapshot()
         latestSettings = settings
-        routingConfig = settings.routingConfig
 
         val dnsPreset = BuiltInDnsPresets.all.find { it.id == settings.activeDnsPresetId }
             ?: BuiltInDnsPresets.all.first()
         dohUrl = settings.customDohUrl.takeIf { it.isNotBlank() } ?: dnsPreset.endpoint
+        dohBootstrapIp = settings.dohBootstrapIp.ifBlank { dnsPreset.bootstrapIp }
 
         val db = BpbDatabase.getInstance(applicationContext)
         val activeXray = db.xrayConfigDao().getActiveConfigOnce()
             ?: settings.activeProfileId?.let { db.xrayConfigDao().getConfigById(it) }
             ?: db.vpnProfileDao().getAllProfilesOnce().firstOrNull()?.let {
-                com.example.data.local.XrayConfigEntity.fromVpnProfile(it)
+                XrayConfigEntity.fromVpnProfile(it)
             }
 
         val resolvedMode = when {
@@ -70,7 +70,7 @@ class BpbVpnService : BaseVpnService() {
                 val psiphonFlag = if (activeXray?.psiphonChainEnabled == true) " + Psiphon" else ""
                 "Xray ${activeXray?.protocol ?: "VLESS"} • $frag$psiphonFlag"
             }
-            TunnelMode.SERVERLESS_DOH -> "DoH (${dnsPreset.name}) • Fake SNI ${settings.fakeSniHost}"
+            TunnelMode.SERVERLESS_DOH -> "DoH (${dnsPreset.name}) • Bootstrap $dohBootstrapIp"
         }
 
         val sessionName = when (resolvedMode) {
@@ -78,13 +78,13 @@ class BpbVpnService : BaseVpnService() {
                 if (psiphon.enabled) "Aether ${aether.transportMode.flag} + Psiphon"
                 else "Aether ${aether.transportMode.flag}"
             TunnelMode.PROFILE_TUNNEL -> activeXray?.name ?: "Xray Tunnel"
-            TunnelMode.SERVERLESS_DOH -> "${dnsPreset.name} (Serverless)"
+            TunnelMode.SERVERLESS_DOH -> "${dnsPreset.name} (Serverless DoH)"
         }
 
         val endpointLabel = when (resolvedMode) {
             TunnelMode.AETHER_WARP -> "${aether.endpointHost}:${aether.endpointPort}"
             TunnelMode.PROFILE_TUNNEL -> "${activeXray?.serverAddress ?: "1.1.1.1"}:${activeXray?.port ?: 443}"
-            TunnelMode.SERVERLESS_DOH -> dnsPreset.bootstrapIp
+            TunnelMode.SERVERLESS_DOH -> dohBootstrapIp
         }
 
         val socksAddr = if (resolvedMode == TunnelMode.AETHER_WARP && aether.localSocksEnabled) {
@@ -106,12 +106,20 @@ class BpbVpnService : BaseVpnService() {
         config: TunnelSessionConfig,
         protectedSocketFactory: SocketFactory,
     ): Result<Long> {
-        dohClient = DnsOverHttpsClient.createClient(protectedSocketFactory)
+        dohEngine?.stop()
+        dohEngine = ServerlessDohTunnelEngine(
+            primaryDohUrl = dohUrl,
+            bootstrapIp = dohBootstrapIp,
+            routingConfig = latestSettings.routingConfig,
+            socketFactory = protectedSocketFactory,
+            enableLocalUdpListener = true,
+            localUdpPort = 5353
+        )
 
         return when (config.mode) {
             TunnelMode.AETHER_WARP -> verifyAetherWarpAndChain(protectedSocketFactory)
             TunnelMode.PROFILE_TUNNEL -> verifyXrayConfigEndpoint()
-            TunnelMode.SERVERLESS_DOH -> verifyDohResolver()
+            TunnelMode.SERVERLESS_DOH -> dohEngine!!.verifyUpstreamSync()
         }
     }
 
@@ -175,18 +183,9 @@ class BpbVpnService : BaseVpnService() {
         return Result.success(rtt)
     }
 
-    private fun verifyDohResolver(): Result<Long> {
-        val client = dohClient ?: return Result.failure(IllegalStateException("DoH client uninitialized"))
-        val startNs = System.nanoTime()
-        val probeWire = DnsOverHttpsClient.buildDnsQuery("cloudflare.com", 1)
-        val resp = DnsOverHttpsClient.resolveWireSync(client, dohUrl, probeWire)
-            ?: return Result.failure(IllegalStateException("DoH resolver $dohUrl unreachable."))
-        val rtt = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
-        BpbLogBuffer.info("DNS", "Serverless DoH verified via $dohUrl (${resp.size}B) in ${rtt}ms.")
-        return Result.success(rtt)
-    }
-
     override fun onSessionEstablished(config: TunnelSessionConfig, socketFactory: SocketFactory) {
+        dohEngine?.start(serviceScope)
+
         val aether = latestSettings.aetherConfig
         val psiphon = latestSettings.psiphonConfig
         if (config.mode == TunnelMode.AETHER_WARP && aether.localSocksEnabled) {
@@ -208,6 +207,8 @@ class BpbVpnService : BaseVpnService() {
     }
 
     override fun onSessionStopped() {
+        dohEngine?.stop()
+        dohEngine = null
         localSocksProxy?.stop()
         localSocksProxy = null
     }
@@ -228,111 +229,21 @@ class BpbVpnService : BaseVpnService() {
         if (dstPort != 53) return
 
         val dnsQuery = packet.copyOfRange(ihl + 8, length)
-        val queriedDomain = DnsOverHttpsClient.extractDomainFromDnsWire(dnsQuery) ?: "unknown"
         VpnStateHolder.recordPacketTraffic(txDelta = length.toLong(), rxDelta = 0L)
 
-        val client = dohClient ?: return
+        val engine = dohEngine ?: return
         serviceScope.launch {
-            val isBlocked = DnsOverHttpsClient.shouldBlockDomain(queriedDomain, routingConfig)
-            val dnsResponse = if (isBlocked) {
-                BpbLogBuffer.debug("DNS", "BLOCKED $queriedDomain (Routing rule)")
-                DnsOverHttpsClient.buildNxdomainResponse(dnsQuery)
-            } else {
-                val resolved = DnsOverHttpsClient.resolveWireSync(client, dohUrl, dnsQuery)
-                if (resolved != null) {
-                    BpbLogBuffer.debug("DNS", "DoH resolved $queriedDomain (${resolved.size}B)")
-                }
-                resolved
+            val outcome = engine.resolveWire(dnsQuery) ?: return@launch
+            val ipUdpPacket = DnsPacketBuilder.buildIpv4UdpResponse(packet, ihl, outcome.responseWire)
+            synchronized(output) {
+                runCatching { output.write(ipUdpPacket) }
             }
-
-            if (dnsResponse != null) {
-                val ipUdpPacket = buildIpv4UdpResponsePacket(packet, ihl, dnsResponse)
-                synchronized(output) {
-                    runCatching { output.write(ipUdpPacket) }
-                }
-                VpnStateHolder.recordPacketTraffic(
-                    txDelta = 0L,
-                    rxDelta = ipUdpPacket.size.toLong(),
-                    dnsIncrement = 1L,
-                    blockedIncrement = if (isBlocked) 1L else 0L
-                )
-            }
+            VpnStateHolder.recordPacketTraffic(
+                txDelta = 0L,
+                rxDelta = ipUdpPacket.size.toLong(),
+                dnsIncrement = 1L,
+                blockedIncrement = if (outcome.blocked) 1L else 0L
+            )
         }
-    }
-
-    private fun buildIpv4UdpResponsePacket(
-        requestPacket: ByteArray,
-        ihl: Int,
-        payload: ByteArray,
-    ): ByteArray {
-        val totalLength = 20 + 8 + payload.size
-        val udpLength = 8 + payload.size
-        val out = ByteArray(totalLength)
-
-        out[0] = 0x45.toByte()
-        out[1] = 0x00.toByte()
-        out[2] = ((totalLength shr 8) and 0xFF).toByte()
-        out[3] = (totalLength and 0xFF).toByte()
-        out[4] = requestPacket[4]
-        out[5] = requestPacket[5]
-        out[6] = 0x40.toByte()
-        out[7] = 0x00.toByte()
-        out[8] = 64.toByte()
-        out[9] = 17.toByte()
-        System.arraycopy(requestPacket, 16, out, 12, 4)
-        System.arraycopy(requestPacket, 12, out, 16, 4)
-
-        val ipChecksum = computeChecksum(out, 0, 20)
-        out[10] = ((ipChecksum shr 8) and 0xFF).toByte()
-        out[11] = (ipChecksum and 0xFF).toByte()
-
-        out[20] = requestPacket[ihl + 2]
-        out[21] = requestPacket[ihl + 3]
-        out[22] = requestPacket[ihl]
-        out[23] = requestPacket[ihl + 1]
-        out[24] = ((udpLength shr 8) and 0xFF).toByte()
-        out[25] = (udpLength and 0xFF).toByte()
-        out[26] = 0x00
-        out[27] = 0x00
-
-        System.arraycopy(payload, 0, out, 28, payload.size)
-
-        val udpChecksum = computeUdpChecksum(out, 20, udpLength)
-        out[26] = ((udpChecksum shr 8) and 0xFF).toByte()
-        out[27] = (udpChecksum and 0xFF).toByte()
-
-        return out
-    }
-
-    private fun computeChecksum(data: ByteArray, offset: Int, length: Int): Int {
-        var sum = 0L
-        var i = offset
-        val end = offset + length
-        while (i + 1 < end) {
-            sum += ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
-            i += 2
-        }
-        if (i < end) sum += (data[i].toInt() and 0xFF) shl 8
-        while ((sum shr 16) != 0L) sum = (sum and 0xFFFFL) + (sum shr 16)
-        return (sum.inv() and 0xFFFFL).toInt()
-    }
-
-    private fun computeUdpChecksum(packet: ByteArray, udpOffset: Int, udpLength: Int): Int {
-        var sum = 0L
-        for (i in 12 until 20 step 2) {
-            sum += ((packet[i].toInt() and 0xFF) shl 8) or (packet[i + 1].toInt() and 0xFF)
-        }
-        sum += 17L
-        sum += udpLength.toLong()
-        var i = udpOffset
-        val end = udpOffset + udpLength
-        while (i + 1 < end) {
-            sum += ((packet[i].toInt() and 0xFF) shl 8) or (packet[i + 1].toInt() and 0xFF)
-            i += 2
-        }
-        if (i < end) sum += (packet[i].toInt() and 0xFF) shl 8
-        while ((sum shr 16) != 0L) sum = (sum and 0xFFFFL) + (sum shr 16)
-        val result = (sum.inv() and 0xFFFFL).toInt()
-        return if (result == 0) 0xFFFF else result
     }
 }

@@ -270,7 +270,7 @@ abstract class BaseVpnService : VpnService() {
         val stopIntent = PendingIntent.getService(
             this,
             1,
-            Intent(this, BpbVpnService::class.java).apply { action = ACTION_STOP },
+            Intent(this, this::class.java).apply { action = ACTION_STOP },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 

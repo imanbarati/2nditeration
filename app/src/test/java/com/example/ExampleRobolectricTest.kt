@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.core.ConfigParser
 import com.example.data.local.BpbDatabase
+import com.example.data.local.CleanIpEntity
 import com.example.data.local.XrayConfigEntity
 import com.example.data.model.BuiltInDnsPresets
 import com.example.data.model.FragmentConfig
@@ -121,5 +122,51 @@ class ExampleRobolectricTest {
         assertTrue(json.contains("\"packets\": \"tlshello\""))
         assertTrue(json.contains("\"amnezia_wg\""))
         assertTrue(json.contains("category-ads-all"))
+    }
+
+    @Test
+    fun `room clean ip dao retrieves highest scoring optimal endpoint`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, BpbDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val dao = db.cleanIpDao()
+
+        dao.insertAll(
+            listOf(
+                CleanIpEntity(
+                    ip = "104.16.10.5",
+                    port = 443,
+                    sni = "speed.cloudflare.com",
+                    cidr = "104.16.0.0/13",
+                    latencyMs = 190L,
+                    tlsSuccess = true,
+                    tlsProtocol = "TLSv1.2",
+                    colo = "AMS",
+                    score = 72
+                ),
+                CleanIpEntity(
+                    ip = "172.64.20.8",
+                    port = 443,
+                    sni = "speed.cloudflare.com",
+                    cidr = "172.64.0.0/13",
+                    latencyMs = 64L,
+                    tlsSuccess = true,
+                    tlsProtocol = "TLSv1.3",
+                    colo = "FRA",
+                    downloadKbps = 820,
+                    score = 96
+                )
+            )
+        )
+
+        val optimal = dao.getOptimalCleanIp()
+        assertNotNull(optimal)
+        assertEquals("172.64.20.8", optimal?.ip)
+        assertEquals("FRA", optimal?.colo)
+        assertEquals("TLSv1.3", optimal?.tlsProtocol)
+        assertEquals(96, optimal?.score)
+
+        db.close()
     }
 }

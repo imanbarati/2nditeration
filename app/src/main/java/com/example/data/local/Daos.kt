@@ -58,8 +58,11 @@ interface SubscriptionDao {
 
 @Dao
 interface CleanIpDao {
-    @Query("SELECT * FROM clean_ips ORDER BY latencyMs ASC")
+    @Query("SELECT * FROM clean_ips ORDER BY score DESC, latencyMs ASC")
     fun observeCleanIps(): Flow<List<CleanIpEntity>>
+
+    @Query("SELECT * FROM clean_ips ORDER BY score DESC, latencyMs ASC LIMIT 1")
+    suspend fun getOptimalCleanIp(): CleanIpEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(ips: List<CleanIpEntity>)

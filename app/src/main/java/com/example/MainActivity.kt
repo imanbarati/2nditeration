@@ -42,6 +42,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -60,6 +61,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.data.model.ConnectionStatus
+import com.example.data.model.TunnelMode
 import com.example.ui.BpbViewModel
 import com.example.ui.screens.AetherWarpScreen
 import com.example.ui.screens.HomeScreen
@@ -112,18 +114,30 @@ fun BpbVpnAppRoot(viewModel: BpbViewModel) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val logs by viewModel.logs.collectAsStateWithLifecycle()
+    val dohMetrics by viewModel.dohMetrics.collectAsStateWithLifecycle()
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
     var scannerInitialTab by remember { mutableIntStateOf(0) }
+    var pendingServerlessDoh by remember { mutableStateOf(false) }
+
+    fun launchRequestedVpn() {
+        if (pendingServerlessDoh) {
+            pendingServerlessDoh = false
+            viewModel.startServerlessDohService()
+        } else {
+            viewModel.startVpnService()
+        }
+    }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            viewModel.startVpnService()
+            launchRequestedVpn()
         } else {
+            pendingServerlessDoh = false
             scope.launch {
                 snackbarHostState.showSnackbar("VPN permission is required to start the tunnel.")
             }
@@ -137,16 +151,11 @@ fun BpbVpnAppRoot(viewModel: BpbViewModel) {
         if (prepareIntent != null) {
             vpnPermissionLauncher.launch(prepareIntent)
         } else {
-            viewModel.startVpnService()
+            launchRequestedVpn()
         }
     }
 
-    fun requestStartOrToggleVpn() {
-        val status = uiState.tunnelStats.status
-        if (status == ConnectionStatus.CONNECTED || status == ConnectionStatus.VERIFYING) {
-            viewModel.stopVpnService()
-            return
-        }
+    fun requestPermissionsAndStartVpn() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 context,
@@ -161,8 +170,32 @@ fun BpbVpnAppRoot(viewModel: BpbViewModel) {
         if (prepareIntent != null) {
             vpnPermissionLauncher.launch(prepareIntent)
         } else {
-            viewModel.startVpnService()
+            launchRequestedVpn()
         }
+    }
+
+    fun requestStartOrToggleVpn() {
+        val status = uiState.tunnelStats.status
+        if (status == ConnectionStatus.CONNECTED || status == ConnectionStatus.VERIFYING) {
+            viewModel.stopVpnService()
+            return
+        }
+        pendingServerlessDoh = false
+        requestPermissionsAndStartVpn()
+    }
+
+    fun requestToggleServerlessDoh() {
+        val status = uiState.tunnelStats.status
+        val isActive = status == ConnectionStatus.CONNECTED || status == ConnectionStatus.VERIFYING
+        if (isActive && uiState.tunnelStats.mode == TunnelMode.SERVERLESS_DOH) {
+            viewModel.stopVpnService()
+            return
+        }
+        if (isActive) {
+            viewModel.stopVpnService()
+        }
+        pendingServerlessDoh = true
+        requestPermissionsAndStartVpn()
     }
 
     LaunchedEffect(Unit) {
@@ -338,13 +371,16 @@ fun BpbVpnAppRoot(viewModel: BpbViewModel) {
                     composable(BpbRoutes.SCANNER) {
                         ScannerScreen(
                             uiState = uiState,
+                            dohMetrics = dohMetrics,
                             initialTab = scannerInitialTab,
                             onUpdateScannerConfig = { viewModel.updateScannerConfig(it) },
                             onStartScan = { viewModel.startCleanIpScan() },
                             onStopScan = { viewModel.stopCleanIpScan() },
                             onApplyCleanIp = { viewModel.applyCleanIpToActiveConfig(it) },
+                            onApplyCleanIpAsDohBootstrap = { viewModel.applyCleanIpAsDohBootstrap(it) },
+                            onToggleServerlessDohTunnel = { requestToggleServerlessDoh() },
                             onSelectDnsPreset = { viewModel.selectDnsPreset(it) },
-                            onSaveCustomDoh = { url, sni -> viewModel.saveCustomDoh(url, sni) },
+                            onSaveCustomDoh = { url, sni, bootIp -> viewModel.saveCustomDoh(url, sni, bootIp) },
                             onTestAllDns = { viewModel.testAllDns(it) },
                             onNotify = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } }
                         )
